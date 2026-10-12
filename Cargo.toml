@@ -1,0 +1,20 @@
+[package]
+name = "cce-vault-web"
+version = "0.1.0"
+edition = "2021"
+description = "The vault in a browser: a cce-ui PWA over an in-memory cce-vault, synced with Dropbox"
+
+# A cdylib for wasm-bindgen (the page), and an rlib so the portable half
+# (sync engine, Dropbox wire types) is tested natively.
+[lib]
+name = "cce_vault_web"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cce-vault = { git = "https://github.com/lsgalante/cce-vault.git", rev = "9697535b1721d00efb6e0cfc88c2349072d5f5bd" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+base64 = "0.22"
+log = "0.4"

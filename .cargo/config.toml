@@ -1,0 +1,5 @@
+# cce-ui's browser renderer uses web-sys's WebGPU bindings, which web-sys
+# still marks unstable. Cargo reads this from the directory it runs in, so
+# build the wasm half from inside this crate.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg=web_sys_unstable_apis"]
