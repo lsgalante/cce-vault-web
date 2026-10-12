@@ -8,7 +8,20 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Headers, Request, RequestInit, Response};
 
-use crate::dropbox;
+use crate::dropbox::{self, Endpoints};
+
+thread_local! {
+    static ENDPOINTS: std::cell::RefCell<Endpoints> = std::cell::RefCell::new(Endpoints::default());
+}
+
+/// Send every call to these hosts from now on.
+pub fn set_endpoints(e: Endpoints) {
+    ENDPOINTS.with(|x| *x.borrow_mut() = e);
+}
+
+fn endpoints() -> Endpoints {
+    ENDPOINTS.with(|x| x.borrow().clone())
+}
 
 pub struct Reply {
     pub status: u16,
@@ -64,7 +77,7 @@ fn bearer(token: &str) -> String {
 pub async fn rpc(token: &str, endpoint: &str, body: &str) -> Result<Reply, String> {
     let auth = bearer(token);
     send(
-        &format!("{}/{endpoint}", dropbox::API),
+        &format!("{}/{endpoint}", endpoints().api),
         &[("Authorization", &auth), ("Content-Type", "application/json")],
         Some(JsValue::from_str(body)),
     )
@@ -74,7 +87,7 @@ pub async fn rpc(token: &str, endpoint: &str, body: &str) -> Result<Reply, Strin
 pub async fn download(token: &str, path: &str) -> Result<Reply, String> {
     let auth = bearer(token);
     let arg = dropbox::download_arg(path);
-    send(&format!("{}/files/download", dropbox::CONTENT), &[("Authorization", &auth), ("Dropbox-API-Arg", &arg)], None).await
+    send(&format!("{}/files/download", endpoints().content), &[("Authorization", &auth), ("Dropbox-API-Arg", &arg)], None).await
 }
 
 pub async fn upload(token: &str, path: &str, rev: Option<&str>, bytes: &[u8]) -> Result<Reply, String> {
@@ -82,7 +95,7 @@ pub async fn upload(token: &str, path: &str, rev: Option<&str>, bytes: &[u8]) ->
     let arg = dropbox::upload_arg(path, rev);
     let body = Uint8Array::from(bytes);
     send(
-        &format!("{}/files/upload", dropbox::CONTENT),
+        &format!("{}/files/upload", endpoints().content),
         &[("Authorization", &auth), ("Dropbox-API-Arg", &arg), ("Content-Type", "application/octet-stream")],
         Some(body.into()),
     )
@@ -92,5 +105,5 @@ pub async fn upload(token: &str, path: &str, rev: Option<&str>, bytes: &[u8]) ->
 /// The token endpoint, with a form body (`dropbox::code_grant` /
 /// `refresh_grant`).
 pub async fn token(form: &str) -> Result<Reply, String> {
-    send(dropbox::TOKEN, &[("Content-Type", "application/x-www-form-urlencoded")], Some(JsValue::from_str(form))).await
+    send(&endpoints().token, &[("Content-Type", "application/x-www-form-urlencoded")], Some(JsValue::from_str(form))).await
 }

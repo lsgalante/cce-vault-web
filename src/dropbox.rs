@@ -20,6 +20,24 @@ pub const CONTENT: &str = "https://content.dropboxapi.com/2";
 pub const AUTHORIZE: &str = "https://www.dropbox.com/oauth2/authorize";
 pub const TOKEN: &str = "https://api.dropboxapi.com/oauth2/token";
 
+/// Where the four kinds of call go: Dropbox's own hosts unless a
+/// deployment's `config.json` points them elsewhere (a local mock, for
+/// testing the whole sync without a Dropbox account).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct Endpoints {
+    pub api: String,
+    pub content: String,
+    pub authorize: String,
+    pub token: String,
+}
+
+impl Default for Endpoints {
+    fn default() -> Self {
+        Endpoints { api: API.into(), content: CONTENT.into(), authorize: AUTHORIZE.into(), token: TOKEN.into() }
+    }
+}
+
 /// One entry of a `list_folder` reply.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = ".tag", rename_all = "snake_case")]
@@ -220,9 +238,9 @@ pub fn pkce_verifier(random: &[u8; 32]) -> String {
 
 /// Where to send the user to log in. `token_access_type=offline` asks for
 /// a refresh token, so the app stays signed in.
-pub fn authorize_url(app_key: &str, redirect: &str, challenge: &str, state: &str) -> String {
+pub fn authorize_url(authorize: &str, app_key: &str, redirect: &str, challenge: &str, state: &str) -> String {
     format!(
-        "{AUTHORIZE}?client_id={}&response_type=code&code_challenge={}&code_challenge_method=S256\
+        "{authorize}?client_id={}&response_type=code&code_challenge={}&code_challenge_method=S256\
          &token_access_type=offline&redirect_uri={}&state={}",
         form_encode(app_key),
         form_encode(challenge),
@@ -377,7 +395,7 @@ mod tests {
             pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
             "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         );
-        let url = authorize_url("key", "https://x.dev/", "ch", "st");
+        let url = authorize_url(AUTHORIZE, "key", "https://x.dev/", "ch", "st");
         assert!(url.contains("redirect_uri=https%3A%2F%2Fx.dev%2F"), "{url}");
         assert!(url.contains("token_access_type=offline"));
         let t = Tokens::from_reply(

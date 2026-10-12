@@ -28,6 +28,9 @@ pub struct Config {
     /// The Dropbox app's key (public under PKCE).
     #[serde(default)]
     pub app_key: String,
+    /// Dropbox's hosts, or a mock's.
+    #[serde(default)]
+    pub endpoints: dropbox::Endpoints,
 }
 
 pub struct Inner {
@@ -481,7 +484,7 @@ async fn start_login(inner: &Inner, root: &str) -> Result<(), String> {
     let state: String = random[..8].iter().map(|b| format!("{b:02x}")).collect();
     let pending = serde_json::json!({ "verifier": verifier, "state": state, "root": root }).to_string();
     inner.db.set_meta("login", &pending).await.map_err(js_err)?;
-    let url = dropbox::authorize_url(&inner.config.app_key, &redirect_uri(), &dropbox::pkce_challenge(&verifier), &state);
+    let url = dropbox::authorize_url(&inner.config.endpoints.authorize, &inner.config.app_key, &redirect_uri(), &dropbox::pkce_challenge(&verifier), &state);
     win.location().set_href(&url).map_err(js_err)
 }
 

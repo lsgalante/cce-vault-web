@@ -55,8 +55,9 @@
     navigator.serviceWorker.register('sw.js').catch((e) => console.warn('service worker:', e));
   }
 
-  if (!navigator.gpu) {
-    note('This app draws with WebGPU, which this browser does not have. On an iPhone it needs iOS 26 or later (Safari 26).');
+  const adapter = navigator.gpu && await navigator.gpu.requestAdapter().catch(() => null);
+  if (!adapter) {
+    note('This app draws with WebGPU, which this browser does not offer. On an iPhone it needs iOS 26 or later (Safari 26).');
   } else {
     try {
       await init();

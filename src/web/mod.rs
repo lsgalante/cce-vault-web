@@ -27,6 +27,7 @@ use backend::{Config, WebBackend};
 pub async fn start(canvas: web_sys::HtmlCanvasElement, fonts: js_sys::Array, families: String, config: String) -> Result<(), JsValue> {
     std::panic::set_hook(Box::new(|info| web_sys::console::error_1(&info.to_string().into())));
     let config: Config = serde_json::from_str(&config).unwrap_or_default();
+    net::set_endpoints(config.endpoints.clone());
     let db = idb::Db::open().await?;
 
     let mut tokens = db.meta("tokens").await?.and_then(|t| serde_json::from_str(&t).ok());

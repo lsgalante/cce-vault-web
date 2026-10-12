@@ -45,7 +45,7 @@ impl Db {
         let upgrade = Closure::once_into_js(move |e: web_sys::Event| {
             let Some(target) = e.target() else { return };
             let Ok(req) = target.dyn_into::<IdbRequest>() else { return };
-            let Ok(db) = req.result().and_then(|r| r.dyn_into::<IdbDatabase>().map_err(JsValue::from)) else { return };
+            let Ok(db) = req.result().and_then(|r| r.dyn_into::<IdbDatabase>()) else { return };
             let names = db.object_store_names();
             for store in [FILES, META] {
                 if !names.contains(store) {

@@ -1262,6 +1262,11 @@ impl Application for VaultApp {
                 self.needs_layout = true;
                 return None;
             }
+            // The editor takes presses only: a browser's keyup carries the
+            // key's text too, and would type it again.
+            if !pressed {
+                return None;
+            }
             if let doc_editor::Response::Follow(t) = self.editor.key(event) {
                 let link = match t {
                     doc_editor::Target::Note { target, subpath } => SpanLink::Note { target, subpath },
