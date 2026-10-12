@@ -7,6 +7,7 @@ const CACHE = 'vault-shell-__VERSION__';
 const SHELL = [
   './',
   'index.html',
+  'app.js',
   'manifest.webmanifest',
   'cce_vault_web.js',
   'cce_vault_web_bg.wasm',

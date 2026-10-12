@@ -67,12 +67,24 @@ the shadow's cce-keyboard over the bottom of the screen (as iOS does), so
 a later tap there lands on its keys: `cce-shadow run cce-keyboard hide`,
 or drive forms with the pointer.
 
+### Deploy
+
+`web/deploy.sh` builds and publishes to Cloudflare Pages, project
+`cce-vault-web`, at https://cce-vault-web.pages.dev (the project was made
+through the API on 2026-10-12). It needs `wrangler login`, plus a
+`web/config.json` with the real `app_key` and NO `endpoints`; it refuses
+the mock's. `web/_headers` sets the CSP: scripts and wasm from the site
+only, `connect-src` to Dropbox's two API hosts, no framing. It is why the
+page script is `app.js` (not inline) and why the shell may build no code
+from strings (cce-ui@e70b446). To test the CSP locally, serve `site/` with
+the `_headers` policy applied and look for violations over CDP.
+
 ### In a browser, against a mock Dropbox
 
 `web/build.sh` builds `site/` (needs the wasm32 target and the
 `wasm-bindgen` CLI at the lock's version; it checks). For an end-to-end
-test with no Dropbox account, point `web/config.json` at
-`web/mock-dropbox.py` (its docstring has the config), seed a folder as
+test with no Dropbox account, copy `web/config.mock.json` to
+`web/config.json` (it points at `web/mock-dropbox.py`), seed a folder as
 `<dir>/Apps/remotely-save/Vault 1` (a COPY of a vault), and run
 `mock-dropbox.py <dir> 8001` and `python3 -m http.server 8000 --directory
 site`. The built-in browser pane has no WebGPU adapter; use Playwright's

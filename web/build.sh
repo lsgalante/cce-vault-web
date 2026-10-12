@@ -39,7 +39,7 @@ fi
 rm -rf "$out"
 mkdir -p "$out/fonts" "$out/icons"
 wasm-bindgen --target web --no-typescript --out-dir "$out" "$wasm"
-cp "$here/index.html" "$here/manifest.webmanifest" "$out/"
+cp "$here/index.html" "$here/app.js" "$here/manifest.webmanifest" "$here/_headers" "$out/"
 cp "$here"/icons/*.png "$out/icons/"
 version=$(git -C "$crate" rev-parse --short HEAD 2>/dev/null || echo dev)-$(date +%s)
 sed "s/__VERSION__/$version/" "$here/sw.js" > "$out/sw.js"
