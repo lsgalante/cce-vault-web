@@ -54,6 +54,7 @@ noto=/usr/share/fonts/noto
 jb=/usr/share/fonts/TTF
 cp "$noto"/NotoSans-{Regular,Bold,Italic,BoldItalic}.ttf "$noto"/NotoSerif-{Regular,Bold}.ttf "$out/fonts/"
 cp "$jb"/JetBrainsMono-{Regular,Bold}.ttf "$out/fonts/"
+cp "$here"/fonts/* "$out/fonts/"
 for lic in noto-fonts ttf-jetbrains-mono; do
     for f in /usr/share/licenses/$lic/*; do
         [[ -f $f ]] && cp "$f" "$out/fonts/LICENSE-$lic-$(basename "$f")"

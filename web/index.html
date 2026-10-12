@@ -18,9 +18,10 @@
   #app {
     position: fixed;
     top: env(safe-area-inset-top); right: env(safe-area-inset-right);
-    bottom: env(safe-area-inset-bottom); left: env(safe-area-inset-left);
+    /* --kb: the on-screen keyboard's height, so the app shrinks above it. */
+    bottom: max(env(safe-area-inset-bottom), var(--kb, 0px)); left: env(safe-area-inset-left);
     width: calc(100% - env(safe-area-inset-left) - env(safe-area-inset-right));
-    height: calc(100% - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    height: calc(100% - env(safe-area-inset-top) - max(env(safe-area-inset-bottom), var(--kb, 0px)));
     display: block; touch-action: none;
   }
   #note {
@@ -41,15 +42,32 @@
     el.style.display = 'grid';
   };
 
-  // The fonts the app draws with (all SIL OFL): the generic serif,
+  // The fonts the app draws with (all SIL OFL; fallback is the first face
+  // in this order that has the glyph): the generic serif,
   // sans-serif and monospace families, named in this order below.
   const FONTS = [
     'fonts/NotoSans-Regular.ttf', 'fonts/NotoSans-Bold.ttf',
     'fonts/NotoSans-Italic.ttf', 'fonts/NotoSans-BoldItalic.ttf',
     'fonts/NotoSerif-Regular.ttf', 'fonts/NotoSerif-Bold.ttf',
     'fonts/JetBrainsMono-Regular.ttf', 'fonts/JetBrainsMono-Bold.ttf',
+    // Last: the fallback for symbols the text faces lack (📅).
+    'fonts/fa-regular-400.ttf',
   ];
   const FAMILIES = 'Noto Serif,Noto Sans,JetBrains Mono';
+
+  // An on-screen keyboard covers the page rather than resizing it (iOS):
+  // follow the visual viewport, so the canvas ends where the keyboard
+  // begins and the editor's caret stays in view.
+  const vv = window.visualViewport;
+  if (vv) {
+    const fit = () => {
+      const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      document.documentElement.style.setProperty('--kb', kb + 'px');
+      if (window.scrollY) window.scrollTo(0, 0);
+    };
+    vv.addEventListener('resize', fit);
+    vv.addEventListener('scroll', fit);
+  }
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch((e) => console.warn('service worker:', e));

@@ -42,6 +42,11 @@ browser shell.
   links resolve), fetched when opened.
 - **Every vault write goes through `VaultApp::flush_writes`** (persist +
   sync). A write that skips it is in memory only and is lost on reload.
+- **The editor takes key presses only**: a browser's keyup carries the
+  key's text, and handed to `DocEditor::key` it typed every letter twice.
+- **Symbols fall back to the last page font** (`web/fonts/fa-regular-400.ttf`,
+  for the Tasks plugin's 📅): the browser has no system fallback, and the
+  measuring fallback is the first face in `FONTS` with the glyph.
 - **Leaving a screen clears field focus** (`enter`): a hidden `TextBox`
   left editing keeps taking every key.
 
@@ -61,6 +66,24 @@ each press and the screen it led to. A `touch tap` on a text field raises
 the shadow's cce-keyboard over the bottom of the screen (as iOS does), so
 a later tap there lands on its keys: `cce-shadow run cce-keyboard hide`,
 or drive forms with the pointer.
+
+### In a browser, against a mock Dropbox
+
+`web/build.sh` builds `site/` (needs the wasm32 target and the
+`wasm-bindgen` CLI at the lock's version; it checks). For an end-to-end
+test with no Dropbox account, point `web/config.json` at
+`web/mock-dropbox.py` (its docstring has the config), seed a folder as
+`<dir>/Apps/remotely-save/Vault 1` (a COPY of a vault), and run
+`mock-dropbox.py <dir> 8001` and `python3 -m http.server 8000 --directory
+site`. The built-in browser pane has no WebGPU adapter; use Playwright's
+Chromium in a shadow (`--ozone-platform=wayland --enable-unsafe-webgpu
+--enable-features=Vulkan,WebGPUService --app=http://localhost:8000/
+--remote-debugging-port=9222`, a fresh `--user-data-dir`, `vkey hold`
+running first). Drive it with `ccectl touch tap` (a finger) and
+`verify/clients`' `vkey` (keys; `ccectl keypress` does not reach
+Chromium), and read page state over CDP on :9222. Edit the mock's folder
+to make remote changes; `mock.log` shows every call. The service worker
+serves the cached shell first, so a new build shows on the second reload.
 
 The crate is a workspace member and builds standalone (its own
 `Cargo.lock`, cce-vault pinned by rev on GitHub).

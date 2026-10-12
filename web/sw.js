@@ -21,6 +21,7 @@ const SHELL = [
   'fonts/NotoSerif-Bold.ttf',
   'fonts/JetBrainsMono-Regular.ttf',
   'fonts/JetBrainsMono-Bold.ttf',
+  'fonts/fa-regular-400.ttf',
 ];
 
 self.addEventListener('install', (e) => {

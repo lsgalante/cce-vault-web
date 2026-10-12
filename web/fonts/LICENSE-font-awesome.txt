@@ -1,0 +1,5 @@
+fa-regular-400.ttf is from Font Awesome Free 6 (https://fontawesome.com),
+whose font files are licensed under the SIL Open Font License 1.1
+(https://scripts.sil.org/OFL); see https://fontawesome.com/license/free.
+It is here as the fallback face for symbols the text faces lack (the
+Tasks plugin's 📅 due-date mark, U+1F4C5).
