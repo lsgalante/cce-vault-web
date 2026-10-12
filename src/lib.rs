@@ -7,6 +7,11 @@
 //! - [`sync`]: the sync engine, a state machine with no I/O.
 //! - [`dropbox`]: Dropbox's HTTP API as data (bodies, headers, content
 //!   hash, PKCE, path mapping).
+//!
+//! The app itself, portable too (it runs natively for development):
+//! - [`app`]: the screens, over [`app::store`]'s shared vault and the
+//!   platform [`app::store::Backend`].
 
+pub mod app;
 pub mod dropbox;
 pub mod sync;

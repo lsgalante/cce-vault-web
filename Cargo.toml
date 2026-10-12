@@ -18,3 +18,13 @@ serde_json = "1"
 sha2 = "0.10"
 base64 = "0.22"
 log = "0.4"
+chrono = "0.4"
+# An Instant that works in the browser (std's panics on wasm32).
+web-time = "1"
+cce-ui = { git = "https://github.com/lsgalante/cce-ui.git", rev = "69a06f891dc9c56be4897ce92173002ad586fabb", features = ["markdown", "doc_editor"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window"] }
+
+[dev-dependencies]
+env_logger = "0.11"

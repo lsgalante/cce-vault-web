@@ -18,6 +18,9 @@ browser shell.
 | --- | --- |
 | `sync` | The sync engine: a state machine with no I/O (`SyncState`, `Step`, `Fetched`). The rules are in its module doc. |
 | `dropbox` | Dropbox's API as data: request bodies, `Dropbox-API-Arg` headers (ASCII-escaped), 409 causes, the content hash, PKCE and token grants, Dropbox path ↔ vault path. |
+| `app` | The `Application`: a phone-first, one-pane navigator (header, body, toolbar of Files / Search / Today / Tasks / New). Screens are a stack (`Screen`); lists are `app::rows::Rows`; notes read in cce-ui's markdown layout and edit in `DocEditor` (autosave 1.2 s after typing stops, and on leaving the note). |
+| `app::store` | What app and platform share: `Store` (the in-memory `Index`, the `SyncState`, the Dropbox root) as `Rc<RefCell<…>>`, the `Backend` trait (persist, sync, login, attachments, status) and the backend's `Msg`s. `Store::take_writes` turns the index's journal into writes to persist and marks them for sync. |
+| `examples/native.rs` | The same app natively on a folder (a COPY of a vault), for driving in a shadow session. |
 
 ## Invariants
 
@@ -36,11 +39,27 @@ browser shell.
 - **Attachments are lazy**: tracked and given an empty placeholder (so
   links resolve), fetched when opened.
 
+- **Every vault write goes through `VaultApp::flush_writes`** (persist +
+  sync). A write that skips it is in memory only and is lost on reload.
+- **Leaving a screen clears field focus** (`enter`): a hidden `TextBox`
+  left editing keeps taking every key.
+
 ## Build and test
 
 ```sh
 cargo test -p cce-vault-web          # the portable half
+cargo build -p cce-vault-web --example native
 ```
+
+Drive the native build in a shadow at scale 2 with a portrait output:
+`cce-shadow start --new --scale 2`, `cce-shadow run wlr-randr --output
+HEADLESS-1 --custom-mode 1000x1800`, then spawn
+`target/debug/examples/native <vault copy>` with `CCE_FONTS_DIR` and
+`CCE_ICONS_DIR` set, and `resize-window 430 860`. `CCE_VAULT_DEBUG=1` logs
+each press and the screen it led to. A `touch tap` on a text field raises
+the shadow's cce-keyboard over the bottom of the screen (as iOS does), so
+a later tap there lands on its keys: `cce-shadow run cce-keyboard hide`,
+or drive forms with the pointer.
 
 The crate is a workspace member and builds standalone (its own
 `Cargo.lock`, cce-vault pinned by rev on GitHub).
