@@ -11,7 +11,12 @@
 //! The app itself, portable too (it runs natively for development):
 //! - [`app`]: the screens, over [`app::store`]'s shared vault and the
 //!   platform [`app::store::Backend`].
+//!
+//! The page half, wasm32 only: `web` (`start`, IndexedDB, Dropbox over
+//! `fetch`, the OAuth login).
 
 pub mod app;
 pub mod dropbox;
 pub mod sync;
+#[cfg(target_arch = "wasm32")]
+pub mod web;

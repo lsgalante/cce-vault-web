@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Vault</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#262a35">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Vault">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<style>
+  html, body { margin: 0; height: 100%; background: #262a35; overflow: hidden; overscroll-behavior: none; }
+  /* The canvas fills the safe area; the shell sizes its buffer from it. */
+  #app {
+    position: fixed;
+    top: env(safe-area-inset-top); right: env(safe-area-inset-right);
+    bottom: env(safe-area-inset-bottom); left: env(safe-area-inset-left);
+    width: calc(100% - env(safe-area-inset-left) - env(safe-area-inset-right));
+    height: calc(100% - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    display: block; touch-action: none;
+  }
+  #note {
+    position: fixed; inset: 0; display: none; place-items: center; padding: 24px;
+    color: #c8c8d4; font: 17px/1.5 -apple-system, system-ui, sans-serif; text-align: center;
+  }
+</style>
+</head>
+<body>
+<canvas id="app"></canvas>
+<div id="note"></div>
+<script type="module">
+  import init, { start } from './cce_vault_web.js';
+
+  const note = (text) => {
+    const el = document.getElementById('note');
+    el.textContent = text;
+    el.style.display = 'grid';
+  };
+
+  // The fonts the app draws with (all SIL OFL): the generic serif,
+  // sans-serif and monospace families, named in this order below.
+  const FONTS = [
+    'fonts/NotoSans-Regular.ttf', 'fonts/NotoSans-Bold.ttf',
+    'fonts/NotoSans-Italic.ttf', 'fonts/NotoSans-BoldItalic.ttf',
+    'fonts/NotoSerif-Regular.ttf', 'fonts/NotoSerif-Bold.ttf',
+    'fonts/JetBrainsMono-Regular.ttf', 'fonts/JetBrainsMono-Bold.ttf',
+  ];
+  const FAMILIES = 'Noto Serif,Noto Sans,JetBrains Mono';
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch((e) => console.warn('service worker:', e));
+  }
+
+  if (!navigator.gpu) {
+    note('This app draws with WebGPU, which this browser does not have. On an iPhone it needs iOS 26 or later (Safari 26).');
+  } else {
+    try {
+      await init();
+      const fonts = await Promise.all(FONTS.map(async (f) => new Uint8Array(await (await fetch(f)).arrayBuffer())));
+      let config = '{}';
+      try {
+        const r = await fetch('config.json', { cache: 'no-store' });
+        if (r.ok) config = await r.text();
+      } catch (_) { /* offline: the cached copy or nothing */ }
+      await start(document.getElementById('app'), fonts, FAMILIES, config);
+    } catch (e) {
+      console.error(e);
+      note('The app failed to start: ' + e);
+    }
+  }
+</script>
+</body>
+</html>

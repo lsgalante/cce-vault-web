@@ -20,6 +20,8 @@ browser shell.
 | `dropbox` | Dropbox's API as data: request bodies, `Dropbox-API-Arg` headers (ASCII-escaped), 409 causes, the content hash, PKCE and token grants, Dropbox path ↔ vault path. |
 | `app` | The `Application`: a phone-first, one-pane navigator (header, body, toolbar of Files / Search / Today / Tasks / New). Screens are a stack (`Screen`); lists are `app::rows::Rows`; notes read in cce-ui's markdown layout and edit in `DocEditor` (autosave 1.2 s after typing stops, and on leaving the note). |
 | `app::store` | What app and platform share: `Store` (the in-memory `Index`, the `SyncState`, the Dropbox root) as `Rc<RefCell<…>>`, the `Backend` trait (persist, sync, login, attachments, status) and the backend's `Msg`s. `Store::take_writes` turns the index's journal into writes to persist and marks them for sync. |
+| `web` (wasm32) | The page half: `start` (open IndexedDB, finish a login returning from Dropbox, load the vault, run the app with `Sizing::Page`); `idb` (files + meta stores); `net` (fetch: RPC, download, upload, token); `backend::WebBackend` (the sync pass over the engine, debounced 2.5 s after a write and every minute while shown; PKCE login by redirect). |
+| `web/` (files) | The PWA shell: `index.html` (fonts, `config.json`, WebGPU check, service worker), `sw.js` (shell cache, stamped per build), `manifest.webmanifest`, icons, `build.sh` (→ `site/`). `config.json` holds the Dropbox app key and is not committed (`config.example.json`). |
 | `examples/native.rs` | The same app natively on a folder (a COPY of a vault), for driving in a shadow session. |
 
 ## Invariants
@@ -38,7 +40,6 @@ browser shell.
   never touched.
 - **Attachments are lazy**: tracked and given an empty placeholder (so
   links resolve), fetched when opened.
-
 - **Every vault write goes through `VaultApp::flush_writes`** (persist +
   sync). A write that skips it is in memory only and is lost on reload.
 - **Leaving a screen clears field focus** (`enter`): a hidden `TextBox`

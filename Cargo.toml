@@ -23,8 +23,36 @@ chrono = "0.4"
 web-time = "1"
 cce-ui = { git = "https://github.com/lsgalante/cce-ui.git", rev = "69a06f891dc9c56be4897ce92173002ad586fabb", features = ["markdown", "doc_editor"] }
 
+# The page: wasm-bindgen's glue, IndexedDB, fetch and the login redirect.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features = ["Window"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "console",
+    "Window",
+    "Document",
+    "Location",
+    "History",
+    "Crypto",
+    "Event",
+    "EventTarget",
+    "DomException",
+    "DomStringList",
+    "HtmlCanvasElement",
+    "IdbFactory",
+    "IdbDatabase",
+    "IdbObjectStore",
+    "IdbOpenDbRequest",
+    "IdbRequest",
+    "IdbTransaction",
+    "IdbTransactionMode",
+    "Headers",
+    "Request",
+    "RequestInit",
+    "Response",
+    "UrlSearchParams",
+] }
 
 [dev-dependencies]
 env_logger = "0.11"
