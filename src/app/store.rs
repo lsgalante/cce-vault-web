@@ -22,13 +22,18 @@ pub struct Store {
     pub server: String,
     /// Each file's hash, so a pass hashes only what changed.
     hashes: HashMap<String, String>,
+    /// The agenda lines of each day asked for (`YYYY-MM-DD`), from the
+    /// server's Google bridge, for drawing ```` ```agenda ```` blocks.
+    pub agendas: HashMap<String, Vec<String>>,
+    /// A note to open when the app starts (a link from a Google task).
+    pub open_on_start: Option<String>,
 }
 
 pub type Shared = Rc<RefCell<Store>>;
 
 impl Store {
     pub fn new(files: Vec<(String, Vec<u8>)>, sync: PhoneSync, server: String) -> Store {
-        Store { index: Index::in_memory(files), sync, server, hashes: HashMap::new() }
+        Store { index: Index::in_memory(files), sync, server, hashes: HashMap::new(), agendas: HashMap::new(), open_on_start: None }
     }
 
     /// Hand the index's journal to sync and return it as writes to persist:
@@ -129,6 +134,9 @@ pub trait Backend {
     fn disconnect(&mut self);
     /// Fetch an attachment's bytes (it has a placeholder until then).
     fn fetch_attachment(&mut self, path: &str);
+    /// Fetch a day's agenda (`YYYY-MM-DD`) into `Store::agendas`, then
+    /// send [`Msg::Agenda`]. Without a server, nothing comes.
+    fn fetch_agenda(&mut self, _date: &str) {}
     /// One line for the status bar: last sync, pending edits, errors.
     fn status(&self) -> String;
 }
@@ -158,6 +166,8 @@ pub enum Msg {
     Remote { changed: Vec<String> },
     /// The status line changed.
     Status,
+    /// A day's agenda arrived.
+    Agenda,
     /// The login came or went.
     Connection,
     /// The page went to the background: save now.

@@ -654,6 +654,19 @@ impl Backend for WebBackend {
         spawn_local(async move { inner.fetch_attachment(path).await });
     }
 
+    fn fetch_agenda(&mut self, date: &str) {
+        let inner = self.0.clone();
+        let date = date.to_string();
+        spawn_local(async move {
+            let lines = match inner.get_json::<cce_sync::agenda::Agenda>(&format!("agenda?date={date}")).await {
+                Ok(a) => a.lines(),
+                Err(e) => vec![format!("(the agenda could not be loaded: {e})")],
+            };
+            inner.store.borrow_mut().agendas.insert(date, lines);
+            let _ = inner.sender.send(Msg::Agenda);
+        });
+    }
+
     fn status(&self) -> String {
         let s = self.0.status.borrow().clone();
         if s.is_empty() {

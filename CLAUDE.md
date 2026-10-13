@@ -60,6 +60,14 @@ browser shell, and `../cce-sync/CLAUDE.md` for the sync rules.
   measuring fallback is the first face in `FONTS` with the glyph.
 - **Leaving a screen clears field focus** (`enter`): a hidden `TextBox`
   left editing keeps taking every key.
+- **```` ```agenda ```` blocks are filled when drawn, never written**
+  (`cce_vault::agenda::fill` on the parsed blocks in `ensure_read_layout`,
+  so no line moves). The day is the block's own date, else the daily
+  note's (`DailyConfig::date_of`); its lines come from `GET /v1/agenda`
+  (the server's Google bridge) into `Store::agendas`, asked again after 5
+  minutes. The editor shows the block as it is in the file: empty.
+- **`/?note=<path>` opens that note** (the link a Google task made from a
+  `#gtask` line carries), and is taken out of the URL.
 
 ## Build and test
 

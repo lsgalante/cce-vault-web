@@ -42,6 +42,8 @@ const TITLE_SIZE: f32 = 17.0;
 const READ_MAX_W: f32 = 720.0;
 const READ_PAD: f32 = 18.0;
 const FORM_FIELD_H: f32 = 44.0;
+/// Ask the server for a day's agenda again after this long.
+const AGENDA_AGAIN: Duration = Duration::from_secs(5 * 60);
 /// Save an edit this long after typing stops.
 const AUTOSAVE_AFTER: Duration = Duration::from_millis(1200);
 
@@ -135,6 +137,8 @@ pub struct VaultApp {
     height: f32,
     needs_layout: bool,
     status: String,
+    /// When each day's agenda was last asked for.
+    agenda_asked: std::collections::HashMap<String, Instant>,
 }
 
 fn fonts() -> Fonts {
@@ -636,7 +640,21 @@ impl VaultApp {
         }
         let st = self.store.borrow();
         let text = st.index.read_text(&path).unwrap_or_default();
-        let blocks = markdown::blocks(&text);
+        let mut blocks = markdown::blocks(&text);
+        // ```agenda blocks: the day's events from the server, filled in
+        // after parsing so no line moves; asked for when missing or stale.
+        let today = chrono::Local::now().date_naive();
+        let note_day = cce_vault::daily::DailyConfig::load(&st.index).date_of(&path, today);
+        let mut ask = Vec::new();
+        for day in cce_vault::agenda::wanted(&blocks, note_day) {
+            let key = day.to_string();
+            if self.agenda_asked.get(&key).is_none_or(|t| t.elapsed() > AGENDA_AGAIN) {
+                self.agenda_asked.insert(key.clone(), Instant::now());
+                ask.push(key);
+            }
+        }
+        let agendas = &st.agendas;
+        cce_vault::agenda::fill(&mut blocks, note_day, &|d| agendas.get(&d.to_string()).cloned(), "Loading the agenda…");
         let m = self.measure.get_or_insert_with(|| ShapingMeasure::new(false));
         let theme = Theme { body_font: "sans-serif".into(), mono_font: "monospace".into(), size: BODY_SIZE };
         let ix = &st.index;
@@ -649,6 +667,9 @@ impl VaultApp {
         let laid = markdown::layout(&blocks, width, &theme, m, &resolved);
         drop(st);
         self.read_layout = Some((path, width, laid));
+        for day in ask {
+            self.backend.fetch_agenda(&day);
+        }
     }
 
     fn read_max_scroll(&self) -> f32 {
@@ -912,7 +933,12 @@ impl Application for VaultApp {
         let primary = button(&mut ui, "Create");
         let connected = backend.connected();
         let empty = store.borrow().index.files().is_empty();
-        let stack = if !connected && empty { vec![Screen::Setup] } else { vec![Screen::Files(String::new())] };
+        let mut stack = if !connected && empty { vec![Screen::Setup] } else { vec![Screen::Files(String::new())] };
+        // Opened from a link (a Google task's): that note, over the root.
+        let wanted = store.borrow_mut().open_on_start.take();
+        if let Some(p) = wanted.filter(|p| store.borrow().index.read_bytes(p).is_ok()) {
+            stack.push(Screen::Note(p));
+        }
         let mut app = VaultApp {
             store,
             backend,
@@ -944,6 +970,7 @@ impl Application for VaultApp {
             height: 800.0,
             needs_layout: true,
             status: String::new(),
+            agenda_asked: std::collections::HashMap::new(),
         };
         app.editor.pad = 18.0;
         app.editor.max_width = READ_MAX_W;
@@ -987,6 +1014,7 @@ impl Application for VaultApp {
                 self.refresh_rows(true);
             }
             Msg::Status => {}
+            Msg::Agenda => self.read_layout = None,
             Msg::Connection => {
                 if self.backend.connected() && self.screen() == Screen::Setup {
                     self.stack = vec![Screen::Files(String::new())];

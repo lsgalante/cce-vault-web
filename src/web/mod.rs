@@ -59,6 +59,8 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement, fonts: js_sys::Array, fam
     let server = net::origin();
     let server = server.split("://").nth(1).unwrap_or(&server).to_string();
     let store = Rc::new(RefCell::new(Store::new(files, sync, server)));
+    // `/?note=<path>`: a link from a Google task back to its note.
+    store.borrow_mut().open_on_start = note_link();
 
     let db = RefCell::new(Some(db));
     install(Box::new(move |sender| {
@@ -89,4 +91,16 @@ fn watch_visibility(sender: cce_ui::engine::AppSender<Msg>) {
     });
     let _ = doc.add_event_listener_with_callback("visibilitychange", cb.as_ref().unchecked_ref());
     cb.forget();
+}
+
+/// The note a `?note=` link names, taken out of the URL so a reload does
+/// not open it again.
+fn note_link() -> Option<String> {
+    let win = web_sys::window()?;
+    let params = web_sys::UrlSearchParams::new_with_str(&win.location().search().ok()?).ok()?;
+    let note = params.get("note").filter(|n| !n.is_empty())?;
+    if let (Ok(h), Ok(origin)) = (win.history(), win.location().origin()) {
+        let _ = h.replace_state_with_url(&JsValue::NULL, "", Some(&format!("{origin}/")));
+    }
+    Some(note)
 }
