@@ -21,7 +21,7 @@ log = "0.4"
 chrono = "0.4"
 # An Instant that works in the browser (std's panics on wasm32).
 web-time = "1"
-cce-ui = { git = "https://github.com/lsgalante/cce-ui.git", rev = "169c3db1005c6fa51d83b515ef3885763e2a4505", features = ["markdown", "doc_editor"] }
+cce-ui = { git = "https://github.com/lsgalante/cce-ui.git", rev = "8cf6009aab8260f0a079ee63870bda2473569018", features = ["markdown", "doc_editor"] }
 
 # The page: wasm-bindgen's glue, IndexedDB, fetch and the login redirect.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
