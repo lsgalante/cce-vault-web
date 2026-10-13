@@ -40,7 +40,9 @@ browser shell, and `../cce-sync/CLAUDE.md` for the sync rules.
   pass puts the rules' state back (`backend::restore`); app writes persist
   files only. Placeholders keep their hashes through a restore.
 - **Hidden files never sync** (`cce_sync::proto::check_path`): an old
-  `.obsidian/` on the phone stays there. `.cce/vault.kdl` does sync.
+  `.obsidian/` on the phone stays there, and nothing reads it.
+  `.cce/vault.kdl` does sync, and is where Today's daily-note settings
+  come from (cce-vault's `DailyConfig::load`).
 - **Attachments are lazy**: given an empty placeholder (so links resolve)
   that the rules read as the bytes it stands for, fetched by hash when
   opened. A placeholder is never pushed, and cannot be renamed until

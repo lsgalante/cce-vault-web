@@ -38,7 +38,7 @@ const TOOLBAR_H: f32 = 56.0;
 const BODY_SIZE: f32 = 17.0;
 const SMALL_SIZE: f32 = 13.0;
 const TITLE_SIZE: f32 = 17.0;
-/// The reading column's widest (Obsidian's readable line length).
+/// The reading column's widest (a readable line length).
 const READ_MAX_W: f32 = 720.0;
 const READ_PAD: f32 = 18.0;
 const FORM_FIELD_H: f32 = 44.0;
@@ -329,7 +329,7 @@ impl VaultApp {
                 match hit {
                     Some(p) => self.open_path(&p, None),
                     None => {
-                        // Obsidian creates a missing note on click.
+                        // A click on a missing note creates it.
                         if let Some(p) = self.create_note("", &target) {
                             self.open_path(&p, None);
                             self.mode = Mode::Edit;
