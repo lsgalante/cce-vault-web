@@ -25,7 +25,7 @@ use cce_ui::widget::doc_editor::{self, DocEditor, EditorTheme};
 use cce_ui::widget::markdown::{self, srgb_u8, Hit, ShapingMeasure, SpanLink, Theme};
 use cce_ui::widget::{
     Adapted, Bounds, Button, ElementState, Event, Handle, Key, KeyEvent, MouseButton, MouseScrollDelta, NamedKey,
-    ScrollMotion, TextBox, WidgetHost, WidgetId,
+    ScrollMotion, TextBox, WidgetEvent, WidgetHost, WidgetId,
 };
 use cce_vault::FileKind;
 use web_time::Instant;
@@ -715,53 +715,60 @@ impl VaultApp {
 
     // ---- widgets --------------------------------------------------------
 
-    fn drain_widgets(&mut self) {
-        if self.ui[self.back].take_click() {
-            self.back();
-        }
-        if self.ui[self.edit].take_click() {
-            if self.mode == Mode::Edit {
-                self.save_editor();
-                self.mode = Mode::Read;
-                self.read_layout = None;
-            } else {
-                self.mode = Mode::Edit;
-            }
-            self.needs_layout = true;
-        }
-        if self.ui[self.more].take_click() {
-            match self.screen() {
-                Screen::Note(p) => self.go(Screen::Actions(p)),
-                _ => self.go(Screen::Vault),
-            }
-        }
-        let clicked: Vec<usize> = (0..self.tools.len()).filter(|&i| self.ui[self.tools[i]].take_click()).collect();
-        for i in clicked {
-            match i {
-                0 => self.reset_to(None),
-                1 => {
-                    self.reset_to(Some(Screen::Search));
+    /// Act on what the widgets reported since the last sweep
+    /// (`UiContext::take_events`), in widget order — the order the per-widget
+    /// polls ran in. Run after every pointer event and key, and in `tick`
+    /// (an assistive tool's SetValue arrives between inputs). Returns whether
+    /// anything was reported.
+    fn drain_widgets(&mut self) -> bool {
+        let events = self.ui.take_events();
+        for &(id, ref ev) in &events {
+            match ev {
+                WidgetEvent::Clicked if id == self.back.id() => self.back(),
+                WidgetEvent::Clicked if id == self.edit.id() => {
+                    if self.mode == Mode::Edit {
+                        self.save_editor();
+                        self.mode = Mode::Read;
+                        self.read_layout = None;
+                    } else {
+                        self.mode = Mode::Edit;
+                    }
+                    self.needs_layout = true;
                 }
-                2 => self.today(),
-                3 => self.reset_to(Some(Screen::Tasks)),
-                _ => {
-                    let folder = match self.screen() {
-                        Screen::Files(f) => f,
-                        Screen::Note(p) => cce_vault::index::parent(&p).to_string(),
-                        _ => String::new(),
-                    };
-                    self.go(Screen::NewNote(folder));
-                }
+                WidgetEvent::Clicked if id == self.more.id() => match self.screen() {
+                    Screen::Note(p) => self.go(Screen::Actions(p)),
+                    _ => self.go(Screen::Vault),
+                },
+                WidgetEvent::Clicked if id == self.primary.id() => self.submit_form(),
+                WidgetEvent::Clicked => match self.tools.iter().position(|t| t.id() == id) {
+                    Some(0) => self.reset_to(None),
+                    Some(1) => self.reset_to(Some(Screen::Search)),
+                    Some(2) => self.today(),
+                    Some(3) => self.reset_to(Some(Screen::Tasks)),
+                    Some(_) => {
+                        let folder = match self.screen() {
+                            Screen::Files(f) => f,
+                            Screen::Note(p) => cce_vault::index::parent(&p).to_string(),
+                            _ => String::new(),
+                        };
+                        self.go(Screen::NewNote(folder));
+                    }
+                    None => {}
+                },
+                WidgetEvent::Changed if id == self.search_box.id() => self.refresh_rows(false),
+                _ => {}
             }
         }
+        // What the handlers above raised themselves: leaving a screen
+        // unfocuses the fields, which commits an edit in progress. The search
+        // box's commit is a change to its query, taken now as the polls took
+        // it; the name and root fields' are echoes, dropped.
         if self.ui[self.search_box].take_change() {
             self.refresh_rows(false);
         }
         self.ui[self.name_box].take_change();
         self.ui[self.root_box].take_change();
-        if self.ui[self.primary].take_click() {
-            self.submit_form();
-        }
+        !events.is_empty()
     }
 
     fn route(&mut self, ev: &Event, short_circuit: bool) -> bool {
@@ -1001,6 +1008,9 @@ impl Application for VaultApp {
 
     fn tick(&mut self, dt: f32, needs_rebuild: &mut bool) {
         if self.ui.tick(dt) {
+            *needs_rebuild = true;
+        }
+        if self.drain_widgets() {
             *needs_rebuild = true;
         }
         let view = self.list_rect();
