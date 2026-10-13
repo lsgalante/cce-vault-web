@@ -220,12 +220,15 @@ impl VaultApp {
         self.needs_layout = true;
         match self.screen() {
             Screen::Note(path) => self.open_note(&path),
+            // The field's value (`TextBox::set_value`), not `set_text`, which
+            // on an `Adapted` widget is its label. The echo needs no drain:
+            // `drain_widgets` drops the name field's changes.
             Screen::NewNote(_) => {
-                self.ui[self.name_box].set_text("");
+                self.ui[self.name_box].set_value("");
             }
             Screen::Rename(path) => {
                 let shown = path.strip_suffix(".md").unwrap_or(&path).to_string();
-                self.ui[self.name_box].set_text(&shown);
+                self.ui[self.name_box].set_value(&shown);
             }
             _ => {}
         }
@@ -342,7 +345,10 @@ impl VaultApp {
             }
             SpanLink::Tag(tag) => {
                 self.go(Screen::Search);
-                self.ui[self.search_box].set_text(&format!("#{tag}"));
+                self.ui[self.search_box].set_value(&format!("#{tag}"));
+                // Set, not typed: drop the echo, or the next sweep runs the
+                // query again and puts the list back at the top.
+                self.ui[self.search_box].take_change();
                 self.refresh_rows(false);
             }
             SpanLink::Url(url) => self.backend_open_url(&url),
