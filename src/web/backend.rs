@@ -1,43 +1,55 @@
-//! The browser's [`Backend`]: files in IndexedDB, sync with Dropbox over
-//! `fetch`, the login through OAuth with PKCE (a redirect to Dropbox and
-//! back, no secret). A sync pass runs one at a time, a moment after the
-//! last local write, on demand, and once a minute while the page shows.
+//! The browser's [`Backend`]: files in IndexedDB, sync with the vault's
+//! server (the origin that served this page) over `fetch`, signing in
+//! through the server's OAuth with PKCE (a redirect and back, no secret).
+//!
+//! A pass runs one at a time: a moment after the last local write, on
+//! demand, when the server's live socket says the vault moved on, and
+//! once a minute while the page shows. It is the laptop daemon's pass
+//! (`cce-sync`'s `pass.rs`) over [`PhoneSync`](crate::sync::PhoneSync):
+//! pull (a listing the first time, the change feed after), carry out each
+//! act only if the file still holds what the plan saw, then push in
+//! rounds. The state is saved only after a pass that finished; a pass that
+//! fails puts the rules' state back as it was, which is safe because every
+//! act is conditional.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
+use cce_sync::client::{Push, SyncState};
+use cce_sync::proto::{encode_path, hash, Applied, ChangesPage, Committed, Listing, LiveNotice, Pre, Refusal, H_DEVICE};
 use cce_ui::engine::AppSender;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 
 use super::idb::Db;
-use super::net::{self, js_err};
+use super::net::{self, js_err, origin, Reply};
 use crate::app::store::{Backend, Msg, Shared};
-use crate::dropbox::{self, ListFolder, Refusal, Tokens};
-use crate::sync::{Fetched, RemoteFile, Step};
+use crate::login::{self, Tokens};
+use crate::sync::Act;
 
 /// After the last local write, wait this long for more before syncing.
 const DEBOUNCE_MS: i32 = 2500;
+/// After a live notice (another device's write), this long.
+const NOTICE_MS: i32 = 300;
 /// And sync this often regardless, while the page shows.
 const PERIOD_MS: i32 = 60_000;
+/// Push rounds per pass: a refusal's conflict copy goes up in the next.
+const ROUNDS: usize = 4;
+/// What the server records this device's changes as.
+const DEVICE: &str = "phone";
 
-/// What the page was configured with (`config.json`).
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct Config {
-    /// The Dropbox app's key (public under PKCE).
-    #[serde(default)]
-    pub app_key: String,
-    /// Dropbox's hosts, or a mock's.
-    #[serde(default)]
-    pub endpoints: dropbox::Endpoints,
-}
+/// IndexedDB meta keys.
+pub const META_SESSION: &str = "session";
+pub const META_SYNC: &str = "cce-sync";
+const META_LOGIN: &str = "login";
+
+type Handler = Closure<dyn FnMut(JsValue)>;
 
 pub struct Inner {
     pub db: Db,
     pub store: Shared,
     pub sender: AppSender<Msg>,
-    pub config: Config,
     pub tokens: RefCell<Option<Tokens>>,
     status: RefCell<String>,
     running: Cell<bool>,
@@ -45,9 +57,20 @@ pub struct Inner {
     timer: Cell<Option<i32>>,
     timer_cb: RefCell<Option<Closure<dyn FnMut()>>>,
     last_sync: RefCell<Option<String>>,
+    /// Writes the server refused for good (a case collision, a bad name).
+    refused: RefCell<Vec<String>>,
+    socket: RefCell<Option<web_sys::WebSocket>>,
+    opening: Cell<bool>,
+    socket_cbs: RefCell<Vec<Handler>>,
 }
 
 pub struct WebBackend(pub Rc<Inner>);
+
+/// A write's outcome: done, or refused by the server's rules.
+enum Answer<T> {
+    Done(T),
+    Refused(Refusal),
+}
 
 fn now_ms() -> f64 {
     js_sys::Date::now()
@@ -57,13 +80,23 @@ fn local_stamp() -> String {
     chrono::Local::now().format("%Y-%m-%d %H%M").to_string()
 }
 
+fn shows() -> bool {
+    web_sys::window().and_then(|w| w.document()).is_some_and(|d| !d.hidden())
+}
+
+fn random_hex<const N: usize>() -> Result<String, String> {
+    let mut b = [0u8; N];
+    let win = web_sys::window().ok_or("no window")?;
+    win.crypto().map_err(js_err)?.get_random_values_with_u8_array(&mut b).map_err(js_err)?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
+}
+
 impl WebBackend {
-    pub fn new(db: Db, store: Shared, sender: AppSender<Msg>, config: Config, tokens: Option<Tokens>) -> WebBackend {
+    pub fn new(db: Db, store: Shared, sender: AppSender<Msg>, tokens: Option<Tokens>) -> WebBackend {
         let inner = Rc::new(Inner {
             db,
             store,
             sender,
-            config,
             tokens: RefCell::new(tokens),
             status: RefCell::new(String::new()),
             running: Cell::new(false),
@@ -71,6 +104,10 @@ impl WebBackend {
             timer: Cell::new(None),
             timer_cb: RefCell::new(None),
             last_sync: RefCell::new(None),
+            refused: RefCell::new(Vec::new()),
+            socket: RefCell::new(None),
+            opening: Cell::new(false),
+            socket_cbs: RefCell::new(Vec::new()),
         });
         let weak = Rc::downgrade(&inner);
         *inner.timer_cb.borrow_mut() = Some(Closure::new(move || {
@@ -79,13 +116,15 @@ impl WebBackend {
                 Inner::run(i);
             }
         }));
-        // The periodic pass.
+        // The periodic pass; in the background, drop the live socket (iOS
+        // would cut it anyway) and let the pass on coming back reopen it.
         let weak = Rc::downgrade(&inner);
         let tick = Closure::<dyn FnMut()>::new(move || {
             if let Some(i) = weak.upgrade() {
-                let shows = web_sys::window().and_then(|w| w.document()).is_some_and(|d| !d.hidden());
-                if shows {
+                if shows() {
                     Inner::run(i);
+                } else {
+                    i.close_live();
                 }
             }
         });
@@ -95,9 +134,7 @@ impl WebBackend {
         tick.forget();
         WebBackend(inner)
     }
-}
 
-impl WebBackend {
     /// The status line, for a message set before the app's first frame.
     pub fn status_cell(&self) -> std::cell::RefMut<'_, String> {
         self.0.status.borrow_mut()
@@ -134,14 +171,25 @@ impl Inner {
             loop {
                 this.again.set(false);
                 this.set_status("Syncing…");
-                match this.pass().await {
+                let before = this.store.borrow().sync.sync.clone();
+                let mut changed = Vec::new();
+                let result = this.pass(&mut changed).await;
+                if !changed.is_empty() {
+                    let _ = this.sender.send(Msg::Remote { changed });
+                }
+                match result {
                     Ok(()) => {
+                        this.save_state().await;
                         let at = chrono::Local::now().format("%H:%M").to_string();
                         *this.last_sync.borrow_mut() = Some(at);
                         let line = this.summary();
                         this.set_status(line);
+                        Inner::open_live(&this);
                     }
-                    Err(e) => this.set_status(format!("Sync failed: {e}")),
+                    Err(e) => {
+                        restore(&this.store, before);
+                        this.set_status(format!("Sync failed: {e}"));
+                    }
                 }
                 if !this.again.get() {
                     break;
@@ -152,47 +200,129 @@ impl Inner {
     }
 
     fn summary(&self) -> String {
-        let pending = self.store.borrow().sync.pending();
+        let pending = self.store.borrow_mut().pending();
         let at = self.last_sync.borrow().clone();
-        match (at, pending) {
+        let mut line = match (at, pending) {
             (Some(at), 0) => format!("Synced {at}"),
             (Some(at), n) => format!("Synced {at} · {n} to send"),
             (None, 0) => "Not synced yet".into(),
             (None, n) => format!("{n} to send"),
+        };
+        if let Some(r) = self.refused.borrow().first() {
+            line.push_str(&format!(" · refused: {r}"));
         }
+        line
     }
 
-    /// A fresh access token, refreshing a stale one.
-    async fn token(&self) -> Result<String, String> {
-        let current = self.tokens.borrow().clone().ok_or("not connected")?;
-        if current.fresh(now_ms()) {
+    // ---- the API --------------------------------------------------------
+
+    /// A fresh access token, refreshing a stale one (or any, when `force`).
+    async fn token(&self, force: bool) -> Result<String, String> {
+        let current = self.tokens.borrow().clone().ok_or("signed out")?;
+        if !force && current.fresh(now_ms()) {
             return Ok(current.access_token);
         }
-        let reply = net::token(&dropbox::refresh_grant(&self.config.app_key, &current.refresh_token)).await?;
+        let reply = net::token(&login::refresh_grant(&current.refresh_token)).await?;
         if !reply.ok() {
             if reply.status == 400 || reply.status == 401 {
-                // The refresh token was revoked: log in again.
-                *self.tokens.borrow_mut() = None;
-                let _ = self.db.delete_meta("tokens").await;
-                let _ = self.sender.send(Msg::Connection);
+                // Revoked, expired or reused: sign in again.
+                self.sign_out().await;
+                return Err("signed out: sign in again".into());
             }
-            return Err(format!("login refresh failed ({})", reply.status));
+            return Err(format!("refreshing the sign-in failed ({})", reply.status));
         }
-        let parsed: dropbox::TokenReply = serde_json::from_slice(&reply.body).map_err(|e| e.to_string())?;
+        let parsed: login::TokenReply = serde_json::from_slice(&reply.body).map_err(|e| e.to_string())?;
         let fresh = Tokens::from_reply(parsed, now_ms(), Some(&current)).ok_or("no token")?;
         let token = fresh.access_token.clone();
-        let _ = self.db.set_meta("tokens", &serde_json::to_string(&fresh).unwrap_or_default()).await;
+        let _ = self.db.set_meta(META_SESSION, &serde_json::to_string(&fresh).unwrap_or_default()).await;
         *self.tokens.borrow_mut() = Some(fresh);
         Ok(token)
     }
 
-    fn root(&self) -> String {
-        self.store.borrow().root.clone()
+    async fn sign_out(&self) {
+        *self.tokens.borrow_mut() = None;
+        self.close_live();
+        let _ = self.db.delete_meta(META_SESSION).await;
+        let _ = self.sender.send(Msg::Connection);
     }
+
+    /// A call to `/v1/<path>`. A `401` refreshes the token and tries once
+    /// more.
+    async fn api(&self, method: &str, path: &str, extra: &[(&str, &str)], body: Option<&[u8]>) -> Result<Reply, String> {
+        let url = format!("{}/v1/{path}", origin());
+        let mut force = false;
+        loop {
+            let auth = format!("Bearer {}", self.token(force).await?);
+            let mut headers = vec![("Authorization", auth.as_str()), (H_DEVICE, DEVICE)];
+            headers.extend_from_slice(extra);
+            let reply = net::send(method, &url, &headers, body).await?;
+            if reply.status == 401 && !force {
+                force = true;
+                continue;
+            }
+            return Ok(reply);
+        }
+    }
+
+    async fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, String> {
+        let reply = self.api("GET", path, &[], None).await?;
+        if !reply.ok() {
+            return Err(format!("GET {path}: {} {}", reply.status, reply.text().trim()));
+        }
+        serde_json::from_slice(&reply.body).map_err(|e| format!("GET {path}: {e}"))
+    }
+
+    async fn blob(&self, h: &str) -> Result<Vec<u8>, String> {
+        let reply = self.api("GET", &format!("blobs/{h}"), &[], None).await?;
+        if !reply.ok() {
+            return Err(format!("blob {h}: {}", reply.status));
+        }
+        if hash(&reply.body) != h {
+            return Err(format!("blob {h} did not match its hash"));
+        }
+        Ok(reply.body)
+    }
+
+    fn answer<T: serde::de::DeserializeOwned>(what: &str, reply: Reply) -> Result<Answer<T>, String> {
+        match reply.status {
+            200 => serde_json::from_slice(&reply.body).map(Answer::Done).map_err(|e| format!("{what}: {e}")),
+            400 | 404 | 409 | 413 => serde_json::from_slice(&reply.body)
+                .map(Answer::Refused)
+                .map_err(|_| format!("{what}: {} {}", reply.status, reply.text().trim())),
+            s => Err(format!("{what}: {s} {}", reply.text().trim())),
+        }
+    }
+
+    async fn put(&self, path: &str, pre: Pre, bytes: &[u8]) -> Result<Answer<Applied>, String> {
+        let what = format!("PUT {path}");
+        let rev;
+        let cond = match pre {
+            Pre::Rev(r) => {
+                rev = r.to_string();
+                ("If-Match", rev.as_str())
+            }
+            Pre::Absent => ("If-None-Match", "*"),
+            Pre::Any => return Err(format!("{what}: a device write needs a precondition")),
+        };
+        let reply = self.api("PUT", &format!("files/{}", encode_path(path)), &[cond], Some(bytes)).await?;
+        match Self::answer::<Committed>(&what, reply)? {
+            Answer::Done(mut c) if !c.applied.is_empty() => Ok(Answer::Done(c.applied.remove(0))),
+            Answer::Done(_) => Err(format!("{what}: empty answer")),
+            Answer::Refused(r) => Ok(Answer::Refused(r)),
+        }
+    }
+
+    async fn delete(&self, path: &str, rev: u64) -> Result<Answer<Committed>, String> {
+        let rev = rev.to_string();
+        let reply = self.api("DELETE", &format!("files/{}", encode_path(path)), &[("If-Match", &rev)], None).await?;
+        Self::answer(&format!("DELETE {path}"), reply)
+    }
+
+    // ---- storage ----------------------------------------------------------
 
     async fn save_state(&self) {
         let json = serde_json::to_string(&self.store.borrow().sync).unwrap_or_default();
-        if let Err(e) = self.db.set_meta("sync", &json).await {
+        if let Err(e) = self.db.set_meta(META_SYNC, &json).await {
             log::warn!("saving sync state: {}", js_err(e));
         }
     }
@@ -207,213 +337,290 @@ impl Inner {
         }
     }
 
-    /// List the remote: from the cursor, or everything when there is none
-    /// (or it expired). Returns the entries, the new cursor, and whether
-    /// it was a complete listing.
-    async fn list(&self, token: &str) -> Result<(Vec<dropbox::Metadata>, String, bool), String> {
-        let root = self.root();
-        let mut cursor = self.store.borrow().sync.cursor.clone();
-        let mut entries = Vec::new();
-        let mut complete = cursor.is_none();
-        loop {
-            let reply = match &cursor {
-                None => net::rpc(token, "files/list_folder", &dropbox::list_folder_body(&root)).await?,
-                Some(c) => net::rpc(token, "files/list_folder/continue", &dropbox::continue_body(c)).await?,
+    fn holds(&self, path: &str, expect: Option<&str>) -> bool {
+        self.store.borrow_mut().holds(path, expect)
+    }
+
+    // ---- the pass ---------------------------------------------------------
+
+    async fn pass(&self, changed: &mut Vec<String>) -> Result<(), String> {
+        self.refused.borrow_mut().clear();
+        self.pull(changed).await?;
+        for _ in 0..ROUNDS {
+            let pushes = {
+                let mut st = self.store.borrow_mut();
+                let local = st.local();
+                st.sync.pushes(&local)
             };
-            if reply.status == 409 && dropbox::refusal(&reply.text()) == Refusal::Reset && cursor.is_some() {
-                cursor = None;
-                entries.clear();
-                complete = true;
-                continue;
+            if pushes.is_empty() {
+                break;
             }
-            if reply.status == 409 {
-                return Err(format!("{root} not found in Dropbox"));
+            let mut progressed = false;
+            for push in pushes {
+                progressed |= self.push(push, changed).await?;
             }
-            if !reply.ok() {
-                return Err(format!("listing failed ({})", reply.status));
-            }
-            let page: ListFolder = serde_json::from_slice(&reply.body).map_err(|e| e.to_string())?;
-            entries.extend(page.entries);
-            cursor = Some(page.cursor);
-            if !page.has_more {
+            if !progressed {
                 break;
             }
         }
-        Ok((entries, cursor.unwrap_or_default(), complete))
+        Ok(())
     }
 
-    /// Download `path` and apply it through the engine. Returns the paths
-    /// the vault changed at.
-    async fn fetch(&self, token: &str, path: &str) -> Result<Vec<String>, String> {
-        let root = self.root();
-        let reply = net::download(token, &dropbox::dropbox_path(&root, path)).await?;
-        if reply.status == 409 {
-            // Gone since the listing; the next listing reports it.
-            return Ok(Vec::new());
-        }
-        if !reply.ok() {
-            return Err(format!("download of {path} failed ({})", reply.status));
-        }
-        let meta: dropbox::FileMetadata =
-            serde_json::from_str(reply.api_result.as_deref().unwrap_or("")).map_err(|e| format!("{path}: {e}"))?;
-        let file = meta.remote_file(&root).unwrap_or(RemoteFile {
-            path: path.to_string(),
-            rev: meta.rev.clone(),
-            hash: meta.content_hash.clone(),
-            size: meta.size,
-        });
-        let decision = {
-            let mut st = self.store.borrow_mut();
-            let st = &mut *st;
-            let local = st.index.read_bytes(&file.path).ok().map(|b| dropbox::content_hash(&b));
-            let index = &st.index;
-            st.sync.fetched(&file, local.as_deref(), &local_stamp(), |p| index.files().contains_key(p))
-        };
-        let mut changed = vec![file.path.clone()];
-        match decision {
-            Fetched::Same => return Ok(Vec::new()),
-            Fetched::Take => {}
-            Fetched::TakeKeepingLocal { copy_to } => {
-                let mine = self.store.borrow().index.read_bytes(&file.path).unwrap_or_default();
-                self.store.borrow_mut().index.put_files([(copy_to.clone(), mine.clone())]);
-                self.persist(&copy_to, Some(&mine)).await;
-                changed.push(copy_to);
+    async fn pull(&self, changed: &mut Vec<String>) -> Result<(), String> {
+        loop {
+            if !self.store.borrow().sync.sync.listed {
+                let listing: Listing = self.get_json("files").await?;
+                let acts = {
+                    let mut st = self.store.borrow_mut();
+                    let local = st.local();
+                    let steps = st.sync.sync.listing(&listing, &local);
+                    st.sync.acts(steps)
+                };
+                return self.carry_out(acts, changed).await;
+            }
+            loop {
+                let seq = self.store.borrow().sync.sync.seq;
+                let page: ChangesPage = self.get_json(&format!("changes?since={seq}")).await?;
+                if page.reset {
+                    // Older than the trimmed feed: list again.
+                    self.store.borrow_mut().sync.sync.listed = false;
+                    break;
+                }
+                let acts = {
+                    let mut st = self.store.borrow_mut();
+                    let local = st.local();
+                    let steps = st.sync.sync.changes(&page, &local);
+                    st.sync.acts(steps)
+                };
+                self.carry_out(acts, changed).await?;
+                if !page.more {
+                    return Ok(());
+                }
             }
         }
-        self.store.borrow_mut().index.put_files([(file.path.clone(), reply.body.clone())]);
-        self.persist(&file.path, Some(&reply.body)).await;
-        Ok(changed)
     }
 
-    async fn pass(&self) -> Result<(), String> {
-        let token = self.token().await?;
-        let root = self.root();
-        let (entries, cursor, complete) = self.list(&token).await?;
-        let changes: Vec<_> = entries.iter().filter_map(|m| dropbox::remote_change(&root, m)).collect();
-        let steps = {
-            let mut st = self.store.borrow_mut();
-            let st = &mut *st;
-            let index = &st.index;
-            st.sync.listing(&changes, complete, |p| index.read_bytes(p).ok().map(|b| dropbox::content_hash(&b)))
-        };
-        let mut changed = Vec::new();
-        let total = steps.iter().filter(|s| matches!(s, Step::Fetch { .. })).count();
+    /// Send one push; whether it moved anything.
+    async fn push(&self, push: Push, changed: &mut Vec<String>) -> Result<bool, String> {
+        match push {
+            Push::Put { path, pre, hash: sent } => {
+                let Ok(bytes) = self.store.borrow().index.read_bytes(&path) else { return Ok(false) };
+                if hash(&bytes) != sent {
+                    return Ok(false); // changed since the plan; the next round sees it
+                }
+                match self.put(&path, pre, &bytes).await? {
+                    Answer::Done(applied) => {
+                        let acts = {
+                            let mut st = self.store.borrow_mut();
+                            let step = st.sync.sync.put_ok(&path, &sent, &applied);
+                            st.sync.acts(step.into_iter().collect())
+                        };
+                        self.carry_out(acts, changed).await?;
+                    }
+                    Answer::Refused(r @ Refusal::Conflict { .. }) => {
+                        let acts = {
+                            let mut st = self.store.borrow_mut();
+                            let st = &mut *st;
+                            let index = &st.index;
+                            let steps =
+                                st.sync.sync.put_refused(&path, &sent, &r, &local_stamp(), |p| index.read_bytes(p).is_ok());
+                            st.sync.acts(steps)
+                        };
+                        self.carry_out(acts, changed).await?;
+                    }
+                    Answer::Refused(r) => {
+                        self.refused.borrow_mut().push(refusal_text(&path, &r));
+                        return Ok(false);
+                    }
+                }
+            }
+            Push::Delete { path, rev } => match self.delete(&path, rev).await? {
+                Answer::Done(_) | Answer::Refused(Refusal::NotFound { .. }) => {
+                    self.store.borrow_mut().sync.sync.delete_ok(&path);
+                }
+                Answer::Refused(r) => {
+                    let acts = {
+                        let mut st = self.store.borrow_mut();
+                        let steps = st.sync.sync.delete_refused(&path, &r);
+                        st.sync.acts(steps)
+                    };
+                    self.carry_out(acts, changed).await?;
+                }
+            },
+        }
+        Ok(true)
+    }
+
+    async fn carry_out(&self, acts: Vec<Act>, changed: &mut Vec<String>) -> Result<(), String> {
+        let total = acts.iter().filter(|a| matches!(a, Act::Fetch { .. })).count();
         let mut done = 0;
-        for step in steps {
-            match step {
-                Step::Fetch { path } => {
+        for act in acts {
+            match act {
+                Act::Fetch { path, rev, hash: h, expect } => {
+                    if !self.holds(&path, expect.as_deref()) {
+                        continue;
+                    }
                     done += 1;
                     if total > 5 {
                         self.set_status(format!("Downloading {done} of {total}…"));
                     }
-                    changed.extend(self.fetch(&token, &path).await?);
-                }
-                Step::Stub { path } => {
-                    self.store.borrow_mut().index.put_files([(path.clone(), Vec::new())]);
-                    self.persist(&path, Some(&[])).await;
+                    let bytes = self.blob(&h).await?;
+                    // The download took time: check again right before the write.
+                    if !self.holds(&path, expect.as_deref()) {
+                        continue;
+                    }
+                    self.store.borrow_mut().put(&path, bytes.clone());
+                    self.persist(&path, Some(&bytes)).await;
+                    self.store.borrow_mut().sync.downloaded(&path, rev, &h);
                     changed.push(path);
                 }
-                Step::Drop { path } => {
-                    self.store.borrow_mut().index.remove_files([path.as_str()]);
+                Act::Stub { path, rev, hash: h, expect } => {
+                    if !self.holds(&path, expect.as_deref()) {
+                        continue;
+                    }
+                    self.store.borrow_mut().put(&path, Vec::new());
+                    self.persist(&path, Some(&[])).await;
+                    self.store.borrow_mut().sync.stubbed(&path, rev, &h);
+                    changed.push(path);
+                }
+                Act::Remove { path, expect } => {
+                    if !self.holds(&path, Some(&expect)) {
+                        continue;
+                    }
+                    {
+                        let mut st = self.store.borrow_mut();
+                        st.remove(&path);
+                        st.sync.removed(&path);
+                    }
                     self.persist(&path, None).await;
                     changed.push(path);
                 }
-            }
-        }
-        // Take the cursor only once the listing is applied: a pass that dies
-        // half way lists the same changes again.
-        self.store.borrow_mut().sync.cursor = Some(cursor);
-        self.save_state().await;
-        if !changed.is_empty() {
-            let _ = self.sender.send(Msg::Remote { changed: changed.clone() });
-        }
-
-        // Push. A refusal turns into a fetch (which keeps the local side as
-        // a conflict copy), and the copy uploads on the next round.
-        for _round in 0..3 {
-            let mut refetch = Vec::new();
-            let uploads = self.store.borrow().sync.uploads();
-            for up in uploads {
-                let bytes = self.store.borrow().index.read_bytes(&up.path).unwrap_or_default();
-                let reply = net::upload(&token, &dropbox::dropbox_path(&root, &up.path), up.rev.as_deref(), &bytes).await?;
-                if reply.status == 409 {
-                    if let Step::Fetch { path } = self.store.borrow_mut().sync.upload_conflicted(&up.path) {
-                        refetch.push(path);
+                Act::KeepCopy { path, to, expect } => {
+                    if !self.holds(&path, Some(&expect)) {
+                        continue;
                     }
-                    continue;
+                    let Ok(bytes) = self.store.borrow().index.read_bytes(&path) else { continue };
+                    self.store.borrow_mut().put(&to, bytes.clone());
+                    self.persist(&to, Some(&bytes)).await;
+                    changed.push(to);
                 }
-                if !reply.ok() {
-                    return Err(format!("upload of {} failed ({})", up.path, reply.status));
-                }
-                let meta: dropbox::FileMetadata = serde_json::from_slice(&reply.body).map_err(|e| e.to_string())?;
-                let mut file = meta.remote_file(&root).ok_or("upload landed outside the vault")?;
-                // Keep the vault's casing for the path we track.
-                file.path = up.path.clone();
-                let mut st = self.store.borrow_mut();
-                let now = st.index.read_bytes(&up.path).ok().map(|b| dropbox::content_hash(&b));
-                st.sync.uploaded(&file, now.as_deref());
-            }
-            let deletes = self.store.borrow().sync.deletes();
-            for del in deletes {
-                let reply =
-                    net::rpc(&token, "files/delete_v2", &dropbox::delete_body(&dropbox::dropbox_path(&root, &del.path), &del.rev))
-                        .await?;
-                if reply.ok() || (reply.status == 409 && dropbox::refusal(&reply.text()) == Refusal::NotFound) {
-                    self.store.borrow_mut().sync.deleted_remote(&del.path);
-                } else if reply.status == 409 {
-                    if let Step::Fetch { path } = self.store.borrow_mut().sync.delete_conflicted(&del.path) {
-                        refetch.push(path);
-                    }
-                } else {
-                    return Err(format!("delete of {} failed ({})", del.path, reply.status));
-                }
-            }
-            self.save_state().await;
-            if refetch.is_empty() {
-                break;
-            }
-            let mut more = Vec::new();
-            for p in refetch {
-                more.extend(self.fetch(&token, &p).await?);
-            }
-            if !more.is_empty() {
-                let _ = self.sender.send(Msg::Remote { changed: more });
             }
         }
-        self.save_state().await;
         Ok(())
     }
 
+    /// Fetch a placeholder's bytes, on opening it.
     async fn fetch_attachment(&self, path: String) {
-        let Ok(token) = self.token().await else { return };
-        let root = self.root();
-        let Ok(reply) = net::download(&token, &dropbox::dropbox_path(&root, &path)).await else { return };
-        if !reply.ok() {
+        let Some(h) = self.store.borrow().sync.to_fetch(&path) else { return };
+        let bytes = match self.blob(&h).await {
+            Ok(b) => b,
+            Err(e) => return self.set_status(format!("{path}: {e}")),
+        };
+        let rev = {
+            let st = self.store.borrow();
+            // Still the placeholder for these bytes, and still their base?
+            let same = st.sync.to_fetch(&path).as_deref() == Some(h.as_str());
+            st.sync.sync.files.get(&path).filter(|b| same && b.hash == h).map(|b| b.rev)
+        };
+        let Some(rev) = rev else { return };
+        self.store.borrow_mut().put(&path, bytes.clone());
+        self.persist(&path, Some(&bytes)).await;
+        self.store.borrow_mut().sync.downloaded(&path, rev, &h);
+        // The base did not move (same rev and hash), so saving outside a
+        // pass is safe here; it records that the file is no placeholder.
+        if !self.running.get() {
+            self.save_state().await;
+        }
+        let _ = self.sender.send(Msg::Remote { changed: vec![path] });
+    }
+
+    // ---- the live socket --------------------------------------------------
+
+    /// Open the live socket if it is not: trade the token for a one-use
+    /// ticket (a browser cannot set a header on a WebSocket) and connect.
+    /// A notice past our seq starts a pass; a closed socket is reopened by
+    /// the next pass that succeeds.
+    fn open_live(this: &Rc<Inner>) {
+        if this.socket.borrow().is_some() || this.opening.get() || !shows() {
             return;
         }
-        if let Some(file) = reply
-            .api_result
-            .as_deref()
-            .and_then(|r| serde_json::from_str::<dropbox::FileMetadata>(r).ok())
-            .map(|m| RemoteFile { path: path.clone(), rev: m.rev, hash: m.content_hash, size: m.size })
-        {
-            self.store.borrow_mut().sync.attachment_fetched(&file);
+        this.opening.set(true);
+        let this = this.clone();
+        spawn_local(async move {
+            if let Err(e) = Inner::connect_live(&this).await {
+                log::warn!("live socket: {e}");
+            }
+            this.opening.set(false);
+        });
+    }
+
+    async fn connect_live(this: &Rc<Inner>) -> Result<(), String> {
+        let reply = this.api("POST", "live-ticket", &[], None).await?;
+        if !reply.ok() {
+            return Err(format!("ticket: {}", reply.status));
         }
-        self.store.borrow_mut().index.put_files([(path.clone(), reply.body.clone())]);
-        self.persist(&path, Some(&reply.body)).await;
-        self.save_state().await;
-        let _ = self.sender.send(Msg::Remote { changed: vec![path] });
+        let v: serde_json::Value = serde_json::from_slice(&reply.body).map_err(|e| e.to_string())?;
+        let ticket = v["ticket"].as_str().ok_or("no ticket")?;
+        let ws = web_sys::WebSocket::new(&login::live_url(&origin(), ticket)).map_err(js_err)?;
+        let weak: Weak<Inner> = Rc::downgrade(this);
+        let on_message = Handler::new(move |e: JsValue| {
+            let Some(i) = weak.upgrade() else { return };
+            let Some(text) = e.dyn_ref::<web_sys::MessageEvent>().and_then(|m| m.data().as_string()) else { return };
+            if let Ok(n) = serde_json::from_str::<LiveNotice>(&text) {
+                if n.seq > i.store.borrow().sync.sync.seq {
+                    i.schedule(NOTICE_MS);
+                }
+            }
+        });
+        let weak: Weak<Inner> = Rc::downgrade(this);
+        let on_close = Handler::new(move |_| {
+            if let Some(i) = weak.upgrade() {
+                i.socket.borrow_mut().take();
+            }
+        });
+        ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+        ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+        ws.set_onerror(Some(on_close.as_ref().unchecked_ref()));
+        *this.socket_cbs.borrow_mut() = vec![on_message, on_close];
+        *this.socket.borrow_mut() = Some(ws);
+        Ok(())
+    }
+
+    fn close_live(&self) {
+        if let Some(ws) = self.socket.borrow_mut().take() {
+            ws.set_onclose(None);
+            ws.set_onerror(None);
+            ws.set_onmessage(None);
+            let _ = ws.close();
+        }
+    }
+}
+
+/// A failed pass: the rules' state goes back to where the pass started
+/// (bases, seq). Files it already wrote match the server, so the next pass
+/// adopts them; placeholders it made keep their hashes, so none is ever
+/// taken for an empty edit.
+fn restore(store: &Shared, before: SyncState) {
+    store.borrow_mut().sync.sync = before;
+}
+
+fn refusal_text(path: &str, r: &Refusal) -> String {
+    match r {
+        Refusal::CaseCollision { existing, .. } => format!("{path} differs only in case from {existing}"),
+        Refusal::BadPath { reason, .. } => format!("{path}: {reason}"),
+        Refusal::TooLarge { .. } => format!("{path} is over 100 MB"),
+        other => format!("{path}: {other:?}"),
     }
 }
 
 impl Backend for WebBackend {
     fn persist(&mut self, writes: Vec<(String, Option<Vec<u8>>)>) {
+        // Only the files: the sync state is saved after a pass, never in one.
         let inner = self.0.clone();
         spawn_local(async move {
             for (path, bytes) in writes {
                 inner.persist(&path, bytes.as_deref()).await;
             }
-            inner.save_state().await;
         });
     }
 
@@ -427,33 +634,37 @@ impl Backend for WebBackend {
         self.0.tokens.borrow().is_some()
     }
 
-    fn connect(&mut self, root: &str) {
-        if self.0.config.app_key.is_empty() {
-            self.0.set_status("No Dropbox app key: set app_key in config.json");
-            return;
-        }
+    fn connect(&mut self) {
         let inner = self.0.clone();
-        let root = root.to_string();
         spawn_local(async move {
-            if let Err(e) = start_login(&inner, &root).await {
-                inner.set_status(format!("Login failed: {e}"));
+            if let Err(e) = start_login(&inner).await {
+                inner.set_status(format!("Sign-in failed: {e}"));
             }
         });
     }
 
     fn disconnect(&mut self) {
-        *self.0.tokens.borrow_mut() = None;
         let inner = self.0.clone();
-        spawn_local(async move {
-            let _ = inner.db.delete_meta("tokens").await;
-            let _ = inner.sender.send(Msg::Connection);
-        });
+        spawn_local(async move { inner.sign_out().await });
     }
 
     fn fetch_attachment(&mut self, path: &str) {
         let inner = self.0.clone();
         let path = path.to_string();
         spawn_local(async move { inner.fetch_attachment(path).await });
+    }
+
+    fn fetch_agenda(&mut self, date: &str) {
+        let inner = self.0.clone();
+        let date = date.to_string();
+        spawn_local(async move {
+            let lines = match inner.get_json::<cce_sync::agenda::Agenda>(&format!("agenda?date={date}")).await {
+                Ok(a) => a.lines(),
+                Err(e) => vec![format!("(the agenda could not be loaded: {e})")],
+            };
+            inner.store.borrow_mut().agendas.insert(date, lines);
+            let _ = inner.sender.send(Msg::Agenda);
+        });
     }
 
     fn status(&self) -> String {
@@ -466,32 +677,24 @@ impl Backend for WebBackend {
     }
 }
 
-/// Where Dropbox sends the user back: this page, without its query.
-pub fn redirect_uri() -> String {
-    let loc = web_sys::window().map(|w| w.location());
-    let origin = loc.as_ref().and_then(|l| l.origin().ok()).unwrap_or_default();
-    let path = loc.as_ref().and_then(|l| l.pathname().ok()).unwrap_or_else(|| "/".into());
-    format!("{origin}{path}")
-}
-
-/// The login's first half: remember a PKCE verifier and the folder, and
-/// go to Dropbox. The page reloads at [`finish_login`].
-async fn start_login(inner: &Inner, root: &str) -> Result<(), String> {
+/// Signing in, first half: remember a PKCE verifier and go to the
+/// server's sign-in page. The page reloads at [`finish_login`].
+async fn start_login(inner: &Inner) -> Result<(), String> {
     let win = web_sys::window().ok_or("no window")?;
     let mut random = [0u8; 32];
     win.crypto().map_err(js_err)?.get_random_values_with_u8_array(&mut random).map_err(js_err)?;
-    let verifier = dropbox::pkce_verifier(&random);
-    let state: String = random[..8].iter().map(|b| format!("{b:02x}")).collect();
-    let pending = serde_json::json!({ "verifier": verifier, "state": state, "root": root }).to_string();
-    inner.db.set_meta("login", &pending).await.map_err(js_err)?;
-    let url = dropbox::authorize_url(&inner.config.endpoints.authorize, &inner.config.app_key, &redirect_uri(), &dropbox::pkce_challenge(&verifier), &state);
+    let verifier = login::pkce_verifier(&random);
+    let state = random_hex::<16>()?;
+    let pending = serde_json::json!({ "verifier": verifier, "state": state }).to_string();
+    inner.db.set_meta(META_LOGIN, &pending).await.map_err(js_err)?;
+    let url = login::authorize_url(&origin(), &login::pkce_challenge(&verifier), &state);
     win.location().set_href(&url).map_err(js_err)
 }
 
-/// The login's second half, on the page Dropbox redirected back to:
+/// Signing in, second half, on the page the server sent the user back to:
 /// trade the code for tokens and clean the URL. `None` when this load is
-/// not a login's return.
-pub async fn finish_login(db: &Db, config: &Config) -> Option<Result<(Tokens, String), String>> {
+/// not a sign-in's return.
+pub async fn finish_login(db: &Db) -> Option<Result<Tokens, String>> {
     let win = web_sys::window()?;
     let search = win.location().search().ok()?;
     let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
@@ -503,29 +706,28 @@ pub async fn finish_login(db: &Db, config: &Config) -> Option<Result<(Tokens, St
     }
     // Whatever happens, the code is single-use: take it out of the URL.
     if let Ok(h) = win.history() {
-        let _ = h.replace_state_with_url(&JsValue::NULL, "", Some(&redirect_uri()));
+        let _ = h.replace_state_with_url(&JsValue::NULL, "", Some(&login::redirect_uri(&origin())));
     }
+    let pending = db.meta(META_LOGIN).await.ok().flatten().and_then(|p| serde_json::from_str::<serde_json::Value>(&p).ok());
+    let _ = db.delete_meta(META_LOGIN).await;
     if let Some(e) = error {
         return Some(Err(e));
     }
-    let pending = db.meta("login").await.ok().flatten().and_then(|p| serde_json::from_str::<serde_json::Value>(&p).ok());
-    let _ = db.delete_meta("login").await;
-    let Some(pending) = pending else { return Some(Err("no login was started on this device".into())) };
+    let Some(pending) = pending else { return Some(Err("no sign-in was started on this device".into())) };
     if pending["state"].as_str() != state.as_deref() {
-        return Some(Err("the login answer did not match the request".into()));
+        return Some(Err("the sign-in answer did not match the request".into()));
     }
     let verifier = pending["verifier"].as_str().unwrap_or_default();
-    let root = pending["root"].as_str().unwrap_or(crate::app::DEFAULT_ROOT).to_string();
-    let reply = match net::token(&dropbox::code_grant(&config.app_key, &redirect_uri(), code.as_deref()?, verifier)).await {
+    let reply = match net::token(&login::code_grant(&origin(), code.as_deref()?, verifier)).await {
         Ok(r) => r,
         Err(e) => return Some(Err(e)),
     };
     if !reply.ok() {
         return Some(Err(format!("token request failed ({}): {}", reply.status, reply.text())));
     }
-    let parsed: dropbox::TokenReply = match serde_json::from_slice(&reply.body) {
+    let parsed: login::TokenReply = match serde_json::from_slice(&reply.body) {
         Ok(p) => p,
         Err(e) => return Some(Err(e.to_string())),
     };
-    Some(Tokens::from_reply(parsed, now_ms(), None).map(|t| (t, root)).ok_or_else(|| "no refresh token".into()))
+    Some(Tokens::from_reply(parsed, now_ms(), None).ok_or_else(|| "no refresh token".into()))
 }

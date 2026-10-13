@@ -1,4 +1,4 @@
-// The page's start-up: fonts, config, the keyboard-aware layout, the
+// The page's start-up: fonts, the keyboard-aware layout, the
 // service worker, the WebGPU check, then the app (cce_vault_web.js).
 import init, { start } from './cce_vault_web.js';
 
@@ -46,12 +46,7 @@ if (!adapter) {
   try {
     await init();
     const fonts = await Promise.all(FONTS.map(async (f) => new Uint8Array(await (await fetch(f)).arrayBuffer())));
-    let config = '{}';
-    try {
-      const r = await fetch('config.json', { cache: 'no-store' });
-      if (r.ok) config = await r.text();
-    } catch (_) { /* offline: the cached copy or nothing */ }
-    await start(document.getElementById('app'), fonts, FAMILIES, config);
+    await start(document.getElementById('app'), fonts, FAMILIES);
   } catch (e) {
     console.error(e);
     note('The app failed to start: ' + e);

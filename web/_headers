@@ -1,12 +1,12 @@
-# Cloudflare Pages headers. The page runs only its own scripts (and its
-# wasm), talks only to Dropbox, and cannot be framed: what keeps the
-# Dropbox token in IndexedDB out of reach of anything else.
+# Headers for the site's files, which the cce-sync Worker serves as static
+# assets (the server's own answers set theirs). The page runs only its own
+# scripts (and its wasm), talks only to its own origin (the sync API, the
+# token endpoint, the live socket), and cannot be framed: what keeps the
+# sign-in in IndexedDB out of reach of anything else.
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://api.dropboxapi.com https://content.dropboxapi.com; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
   Permissions-Policy: camera=(), microphone=(), geolocation=()
 /sw.js
-  Cache-Control: no-cache
-/config.json
   Cache-Control: no-cache

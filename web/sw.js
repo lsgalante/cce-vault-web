@@ -1,8 +1,9 @@
 // The service worker: keeps the app shell (page, wasm, fonts, icons)
 // cached so the app opens offline. The vault itself lives in IndexedDB,
-// which the app reads; Dropbox's API (another origin) is never touched
-// here. build.sh writes the build's version into CACHE, so a new build
-// replaces the old shell on the next visit.
+// which the app reads. The server's own paths (the sync API, sign-in,
+// Claude's connector) share this origin and are never touched here.
+// build.sh writes the build's version into CACHE, so a new build replaces
+// the old shell on the next visit.
 const CACHE = 'vault-shell-__VERSION__';
 const SHELL = [
   './',
@@ -40,20 +41,8 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== self.location.origin) return;
-  // config.json: the network first (it may change), the cache offline.
-  if (url.pathname.endsWith('/config.json')) {
-    e.respondWith(
-      fetch(e.request)
-        .then((r) => {
-          const copy = r.clone();
-          caches.open(CACHE).then((c) => c.put(e.request, copy));
-          return r;
-        })
-        .catch(() => caches.match(e.request)),
-    );
-    return;
-  }
-  // The login's return carries ?code=…: serve the page without matching
-  // on the query.
+  if (/^\/(v1|oauth|mcp|\.well-known|health)(\/|$)/.test(url.pathname)) return;
+  // The sign-in's return carries ?code=…: serve the page without
+  // matching on the query.
   e.respondWith(caches.match(e.request, { ignoreSearch: true }).then((hit) => hit || fetch(e.request)));
 });

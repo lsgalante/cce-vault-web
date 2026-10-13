@@ -1,6 +1,6 @@
-//! Dropbox over `fetch`: the four calls the sync makes and the token
-//! grants, each returning the status and body for `dropbox` to read. A
-//! network failure (offline) is `Err`; an HTTP error status is not.
+//! The vault's server over `fetch`, same origin: each call returns the
+//! status and body for the backend to read. A network failure (offline)
+//! is `Err`; an HTTP error status is not.
 
 use js_sys::Uint8Array;
 use wasm_bindgen::prelude::*;
@@ -8,26 +8,9 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Headers, Request, RequestInit, Response};
 
-use crate::dropbox::{self, Endpoints};
-
-thread_local! {
-    static ENDPOINTS: std::cell::RefCell<Endpoints> = std::cell::RefCell::new(Endpoints::default());
-}
-
-/// Send every call to these hosts from now on.
-pub fn set_endpoints(e: Endpoints) {
-    ENDPOINTS.with(|x| *x.borrow_mut() = e);
-}
-
-fn endpoints() -> Endpoints {
-    ENDPOINTS.with(|x| x.borrow().clone())
-}
-
 pub struct Reply {
     pub status: u16,
     pub body: Vec<u8>,
-    /// The `Dropbox-API-Result` header (a download's metadata).
-    pub api_result: Option<String>,
 }
 
 impl Reply {
@@ -40,16 +23,21 @@ impl Reply {
     }
 }
 
-async fn send(url: &str, headers: &[(&str, &str)], body: Option<JsValue>) -> Result<Reply, String> {
+/// The page's origin (`https://host`): the server is the one that served it.
+pub fn origin() -> String {
+    web_sys::window().and_then(|w| w.location().origin().ok()).unwrap_or_default()
+}
+
+pub async fn send(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&[u8]>) -> Result<Reply, String> {
     let init = RequestInit::new();
-    init.set_method("POST");
+    init.set_method(method);
     let h = Headers::new().map_err(js_err)?;
     for (k, v) in headers {
         h.set(k, v).map_err(js_err)?;
     }
     init.set_headers(&h);
     if let Some(b) = body {
-        init.set_body(&b);
+        init.set_body(&Uint8Array::from(b).into());
     }
     let req = Request::new_with_str_and_init(url, &init).map_err(js_err)?;
     let win = web_sys::window().ok_or("no window")?;
@@ -58,9 +46,8 @@ async fn send(url: &str, headers: &[(&str, &str)], body: Option<JsValue>) -> Res
         .map_err(|e| format!("offline? {}", js_err(e)))?
         .dyn_into()
         .map_err(js_err)?;
-    let api_result = resp.headers().get("Dropbox-API-Result").ok().flatten();
     let buf = JsFuture::from(resp.array_buffer().map_err(js_err)?).await.map_err(js_err)?;
-    Ok(Reply { status: resp.status(), body: Uint8Array::new(&buf).to_vec(), api_result })
+    Ok(Reply { status: resp.status(), body: Uint8Array::new(&buf).to_vec() })
 }
 
 pub fn js_err(e: JsValue) -> String {
@@ -69,41 +56,14 @@ pub fn js_err(e: JsValue) -> String {
         .unwrap_or_else(|| format!("{e:?}"))
 }
 
-fn bearer(token: &str) -> String {
-    format!("Bearer {token}")
-}
-
-/// An RPC endpoint: a JSON body in, a JSON body out.
-pub async fn rpc(token: &str, endpoint: &str, body: &str) -> Result<Reply, String> {
-    let auth = bearer(token);
-    send(
-        &format!("{}/{endpoint}", endpoints().api),
-        &[("Authorization", &auth), ("Content-Type", "application/json")],
-        Some(JsValue::from_str(body)),
-    )
-    .await
-}
-
-pub async fn download(token: &str, path: &str) -> Result<Reply, String> {
-    let auth = bearer(token);
-    let arg = dropbox::download_arg(path);
-    send(&format!("{}/files/download", endpoints().content), &[("Authorization", &auth), ("Dropbox-API-Arg", &arg)], None).await
-}
-
-pub async fn upload(token: &str, path: &str, rev: Option<&str>, bytes: &[u8]) -> Result<Reply, String> {
-    let auth = bearer(token);
-    let arg = dropbox::upload_arg(path, rev);
-    let body = Uint8Array::from(bytes);
-    send(
-        &format!("{}/files/upload", endpoints().content),
-        &[("Authorization", &auth), ("Dropbox-API-Arg", &arg), ("Content-Type", "application/octet-stream")],
-        Some(body.into()),
-    )
-    .await
-}
-
-/// The token endpoint, with a form body (`dropbox::code_grant` /
+/// The token endpoint, with a form body (`login::code_grant` /
 /// `refresh_grant`).
 pub async fn token(form: &str) -> Result<Reply, String> {
-    send(&endpoints().token, &[("Content-Type", "application/x-www-form-urlencoded")], Some(JsValue::from_str(form))).await
+    send(
+        "POST",
+        &format!("{}/oauth/token", origin()),
+        &[("Content-Type", "application/x-www-form-urlencoded")],
+        Some(form.as_bytes()),
+    )
+    .await
 }
