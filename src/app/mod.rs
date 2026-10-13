@@ -8,7 +8,7 @@
 //! It is the same `Application` in the browser and natively (the native
 //! build is for development: `examples/native.rs` runs it on a folder in a
 //! shadow session). Everything platform-shaped — where files are kept,
-//! Dropbox — is behind [`store::Backend`], installed before the shell
+//! the server — is behind [`store::Backend`], installed before the shell
 //! starts ([`install`]).
 
 pub mod rows;
@@ -44,8 +44,6 @@ const READ_PAD: f32 = 18.0;
 const FORM_FIELD_H: f32 = 44.0;
 /// Save an edit this long after typing stops.
 const AUTOSAVE_AFTER: Duration = Duration::from_millis(1200);
-/// The Dropbox folder offered on first run.
-pub const DEFAULT_ROOT: &str = "/Apps/remotely-save/Vault 1";
 
 thread_local! {
     static INSTALL: RefCell<Option<Installer>> = const { RefCell::new(None) };
@@ -63,7 +61,7 @@ pub fn install(f: Installer) {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Screen {
-    /// First run: which Dropbox folder, and the login.
+    /// First run: sign in to the vault's server.
     Setup,
     /// A folder of the vault ("" = the root).
     Files(String),
@@ -92,6 +90,7 @@ enum Target {
     Rename(String),
     Delete(String),
     SyncNow,
+    SignIn,
     Disconnect,
     None,
 }
@@ -114,7 +113,6 @@ pub struct VaultApp {
     tools: [Handle<Adapted<Button>>; 5],
     search_box: Handle<Adapted<TextBox>>,
     name_box: Handle<Adapted<TextBox>>,
-    root_box: Handle<Adapted<TextBox>>,
     primary: Handle<Adapted<Button>>,
     // The open note.
     mode: Mode,
@@ -177,7 +175,7 @@ impl VaultApp {
 
     fn root_ids(&self) -> Vec<WidgetId> {
         let mut ids = vec![self.back.id(), self.edit.id(), self.more.id(), self.search_box.id(), self.name_box.id()];
-        ids.extend([self.root_box.id(), self.primary.id()]);
+        ids.push(self.primary.id());
         ids.extend(self.tools.iter().map(|t| t.id()));
         ids
     }
@@ -214,7 +212,7 @@ impl VaultApp {
         // A field left editing on the screen just left would keep taking
         // keys while hidden.
         self.ui.clear_focus();
-        for h in [self.search_box, self.name_box, self.root_box] {
+        for h in [self.search_box, self.name_box] {
             self.ui.unfocus_id(h.id());
         }
         self.needs_layout = true;
@@ -255,12 +253,8 @@ impl VaultApp {
     }
 
     fn open_path(&mut self, path: &str, line: Option<usize>) {
-        let kind = FileKind::of(path);
-        if kind == FileKind::Attachment {
-            let held = self.store.borrow().sync.tracked(path).is_none_or(|t| t.held);
-            if !held {
-                self.backend.fetch_attachment(path);
-            }
+        if self.store.borrow().sync.is_stub(path) {
+            self.backend.fetch_attachment(path);
         }
         self.go(Screen::Note(path.to_string()));
         self.read_pending_line = line;
@@ -439,11 +433,13 @@ impl VaultApp {
                 let mut v = vec![
                     Row::new("Sync now", Kind::Action, Target::SyncNow),
                     Row::new(self.backend.status(), Kind::Note2, Target::None),
-                    Row::new(format!("Dropbox folder: {}", st.root), Kind::Note2, Target::None),
+                    Row::new(format!("Server: {}", st.server), Kind::Note2, Target::None),
                     Row::new(format!("{} files on this device", ix.files().len()), Kind::Note2, Target::None),
                 ];
                 if connected {
-                    v.push(Row::new("Disconnect Dropbox", Kind::Danger, Target::Disconnect));
+                    v.push(Row::new("Sign out", Kind::Danger, Target::Disconnect));
+                } else {
+                    v.push(Row::new("Sign in", Kind::Action, Target::SignIn));
                 }
                 v
             }
@@ -487,6 +483,10 @@ impl VaultApp {
                 self.status = self.backend.status();
                 self.refresh_rows(true);
             }
+            Target::SignIn => {
+                self.backend.connect();
+                self.status = self.backend.status();
+            }
             Target::Disconnect => {
                 self.backend.disconnect();
                 self.refresh_rows(true);
@@ -498,14 +498,7 @@ impl VaultApp {
     fn submit_form(&mut self) {
         match self.screen() {
             Screen::Setup => {
-                let root = self.ui[self.root_box].edit_buffer.clone();
-                let root = if root.trim().is_empty() { self.ui[self.root_box].text.clone() } else { root };
-                let root = root.trim().trim_end_matches('/').to_string();
-                if root.is_empty() {
-                    return;
-                }
-                self.store.borrow_mut().root = root.clone();
-                self.backend.connect(&root);
+                self.backend.connect();
                 self.status = self.backend.status();
             }
             Screen::NewNote(folder) => {
@@ -523,6 +516,11 @@ impl VaultApp {
                     return;
                 }
                 let to = if FileKind::of(&from) == FileKind::Note && !to.ends_with(".md") { format!("{to}.md") } else { to.to_string() };
+                if self.store.borrow().sync.is_stub(&from) {
+                    // A placeholder's empty bytes would go up as the file.
+                    self.status = "Open it first, so it is downloaded".into();
+                    return;
+                }
                 let r = self.store.borrow_mut().index.rename(&from, &to);
                 match r {
                     Ok(plan) => {
@@ -592,17 +590,15 @@ impl VaultApp {
         self.ui[self.name_box].set_rect(fx, body.y + 48.0, field_w, FORM_FIELD_H);
 
         let setup = screen == Screen::Setup;
-        show(&mut self.ui, self.root_box.id(), setup);
-        self.ui[self.root_box].set_rect(fx, body.y + 112.0, field_w, FORM_FIELD_H);
 
         show(&mut self.ui, self.primary.id(), naming || setup);
         let label = match screen {
-            Screen::Setup => "Connect Dropbox",
+            Screen::Setup => "Sign in",
             Screen::NewNote(_) => "Create",
             _ => "Rename",
         };
         self.ui[self.primary].set_label(label);
-        let py = if setup { body.y + 112.0 + FORM_FIELD_H + 20.0 } else { body.y + 48.0 + FORM_FIELD_H + 20.0 };
+        let py = if setup { body.y + 112.0 } else { body.y + 48.0 + FORM_FIELD_H + 20.0 };
         self.ui[self.primary].set_rect(fx, py, field_w.min(240.0), 44.0);
         self.ui.rebuild_spatial_grid();
     }
@@ -664,10 +660,10 @@ impl VaultApp {
         let Some(path) = self.current_note() else { return };
         let body = self.body();
         if FileKind::of(&path) != FileKind::Note {
-            let held = self.store.borrow().sync.tracked(&path).is_none_or(|t| t.held);
+            let stub = self.store.borrow().sync.is_stub(&path);
             let msg = match FileKind::of(&path) {
-                _ if !held => "Downloading…",
-                FileKind::Canvas => "Canvases open in Obsidian.",
+                _ if stub => "Downloading…",
+                FileKind::Canvas => "Canvases open on the laptop.",
                 _ => "This file is not a note.",
             };
             pc.text_with(msg, body.x + PAD, body.y + PAD, BODY_SIZE, srgb_u8(cce_ui::color::TEXT_DIM), Some("sans-serif".into()), None);
@@ -768,12 +764,11 @@ impl VaultApp {
         // What the handlers above raised themselves: leaving a screen
         // unfocuses the fields, which commits an edit in progress. The search
         // box's commit is a change to its query, taken now as the polls took
-        // it; the name and root fields' are echoes, dropped.
+        // it; the name field's are echoes, dropped.
         if self.ui[self.search_box].take_change() {
             self.refresh_rows(false);
         }
         self.ui[self.name_box].take_change();
-        self.ui[self.root_box].take_change();
         !events.is_empty()
     }
 
@@ -791,7 +786,7 @@ impl VaultApp {
     }
 
     fn any_field_editing(&self) -> bool {
-        [self.search_box, self.name_box, self.root_box].iter().any(|h| self.ui[*h].editing)
+        [self.search_box, self.name_box].iter().any(|h| self.ui[*h].editing)
     }
 }
 
@@ -894,7 +889,7 @@ impl Application for VaultApp {
         let (store, backend): (Shared, Box<dyn Backend>) = match installer {
             Some(f) => f(sender),
             None => (
-                std::rc::Rc::new(RefCell::new(Store::new(Vec::new(), Default::default(), DEFAULT_ROOT.into()))),
+                std::rc::Rc::new(RefCell::new(Store::new(Vec::new(), Default::default(), String::new()))),
                 Box::new(NullBackend),
             ),
         };
@@ -914,8 +909,6 @@ impl Application for VaultApp {
             TextBox::new(String::new()).with_placeholder("Search").with_update_on_type(true).with_font_size(BODY_SIZE),
         );
         let name_box = ui.insert(TextBox::new(String::new()).with_placeholder("Note name").with_font_size(BODY_SIZE));
-        let root_root = store.borrow().root.clone();
-        let root_box = ui.insert(TextBox::new(root_root).with_placeholder(DEFAULT_ROOT).with_font_size(BODY_SIZE));
         let primary = button(&mut ui, "Create");
         let connected = backend.connected();
         let empty = store.borrow().index.files().is_empty();
@@ -932,7 +925,6 @@ impl Application for VaultApp {
             tools,
             search_box,
             name_box,
-            root_box,
             primary,
             mode: Mode::Read,
             editor: DocEditor::new("", EditorTheme::new(BODY_SIZE), false),
@@ -1093,15 +1085,15 @@ impl Application for VaultApp {
             Screen::Note(_) => self.paint_note(&mut pc),
             Screen::Setup => {
                 let lines = [
-                    "Your vault, synced with Dropbox.",
+                    "Your vault, synced with your server.",
                     "",
-                    "Dropbox folder that holds the vault:",
+                    "Sign in with the Google account it allows.",
                 ];
                 for (i, l) in lines.iter().enumerate() {
                     pc.text_with(l.to_string(), body.x + PAD, body.y + 20.0 + i as f32 * 24.0, BODY_SIZE, if i == 0 { fg } else { dim }, Some(f.family.clone()), None);
                 }
                 if !self.status.is_empty() {
-                    pc.text_with(self.status.clone(), body.x + PAD, body.y + 112.0 + FORM_FIELD_H + 84.0, SMALL_SIZE, dim, Some(f.family.clone()), Some([body.x, body.y, body.x + body.width - PAD, body.y + body.height]));
+                    pc.text_with(self.status.clone(), body.x + PAD, body.y + 112.0 + 64.0, SMALL_SIZE, dim, Some(f.family.clone()), Some([body.x, body.y, body.x + body.width - PAD, body.y + body.height]));
                 }
             }
             Screen::NewNote(folder) => {
@@ -1333,7 +1325,7 @@ impl VaultApp {
             let now = chrono::Local::now().format("%Y-%m-%d %H%M").to_string();
             let copy = {
                 let st = self.store.borrow();
-                crate::sync::conflict_name(path, &now, |p| st.index.files().contains_key(p))
+                cce_sync::client::conflict_name(path, &now, |p| st.exists(p))
             };
             let r = self.store.borrow_mut().index.write_text(&copy, &mine);
             if r.is_ok() {

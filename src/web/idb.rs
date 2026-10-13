@@ -1,6 +1,6 @@
 //! IndexedDB, the page's durable storage: one database with two object
 //! stores, `files` (vault path → bytes) and `meta` (a name → a JSON string:
-//! the sync state, the login, the Dropbox folder). Requests are turned into
+//! the sync state, the sign-in). Requests are turned into
 //! futures here; nothing else in the crate touches the IDB API.
 
 use js_sys::{Array, Promise, Uint8Array};
@@ -84,12 +84,6 @@ impl Db {
     pub async fn delete_file(&self, path: &str) -> Result<(), JsValue> {
         let store = self.store(FILES, true)?;
         done(&store.delete(&JsValue::from_str(path))?).await?;
-        Ok(())
-    }
-
-    /// Forget every file (a new vault folder, or a disconnect that wipes).
-    pub async fn clear_files(&self) -> Result<(), JsValue> {
-        done(&self.store(FILES, true)?.clear()?).await?;
         Ok(())
     }
 

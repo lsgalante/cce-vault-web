@@ -4,7 +4,7 @@
 //! syncs to other devices), in a shadow session:
 //!
 //! ```sh
-//! cp -a ~/Dropbox/Apps/remotely-save/"Vault 1" /tmp/vault-copy
+//! cp -a ~/Vault /tmp/vault-copy
 //! cargo run -p cce-vault-web --example native -- /tmp/vault-copy
 //! ```
 
@@ -16,7 +16,7 @@ fn main() {
 
     use cce_vault_web::app::store::{Backend, Store};
     use cce_vault_web::app::{install, VaultApp};
-    use cce_vault_web::sync::SyncState;
+    use cce_vault_web::sync::PhoneSync;
 
     struct Folder(PathBuf);
 
@@ -37,7 +37,7 @@ fn main() {
         fn connected(&self) -> bool {
             true
         }
-        fn connect(&mut self, _: &str) {}
+        fn connect(&mut self) {}
         fn disconnect(&mut self) {}
         fn fetch_attachment(&mut self, _: &str) {}
         fn status(&self) -> String {
@@ -62,7 +62,7 @@ fn main() {
     let mut files = Vec::new();
     walk(&dir, &dir, &mut files);
     install(Box::new(move |_sender| {
-        let store = Rc::new(RefCell::new(Store::new(files, SyncState::default(), "(local)".into())));
+        let store = Rc::new(RefCell::new(Store::new(files, PhoneSync::default(), "(none: a local folder)".into())));
         (store, Box::new(Folder(dir)) as Box<dyn Backend>)
     }));
     cce_ui::engine::run::<VaultApp>();

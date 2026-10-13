@@ -2,10 +2,9 @@
 # build.sh [--debug] [out-dir] — build the PWA into a static site (default:
 # ../site), ready to serve or deploy: the app compiled for wasm32 and bound
 # with wasm-bindgen, the page, the service worker (stamped with the build's
-# version), the manifest, icons, fonts and their licences, and config.json
-# from web/config.json (copy config.example.json and set the Dropbox app
-# key; it is public under PKCE, but it is per deployment, so it is not
-# committed).
+# version), the manifest, icons, fonts and their licences. The site needs
+# no configuration: it talks to the origin that serves it, the cce-sync
+# Worker (whose deploy.sh builds it into the Worker's static assets).
 #
 # Needs the wasm32-unknown-unknown target (Arch: `pacman -S rust-wasm`) and
 # a wasm-bindgen CLI of the SAME version as the wasm-bindgen crate in the
@@ -43,12 +42,6 @@ cp "$here/index.html" "$here/app.js" "$here/manifest.webmanifest" "$here/_header
 cp "$here"/icons/*.png "$out/icons/"
 version=$(git -C "$crate" rev-parse --short HEAD 2>/dev/null || echo dev)-$(date +%s)
 sed "s/__VERSION__/$version/" "$here/sw.js" > "$out/sw.js"
-if [[ -f $here/config.json ]]; then
-    cp "$here/config.json" "$out/config.json"
-else
-    echo "build.sh: no web/config.json — the app will ask for nothing but cannot log in" >&2
-    echo '{}' > "$out/config.json"
-fi
 
 noto=/usr/share/fonts/noto
 jb=/usr/share/fonts/TTF

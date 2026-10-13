@@ -1,4 +1,0 @@
-{"app_key": "mock", "endpoints": {
-  "api": "http://127.0.0.1:8001/2", "content": "http://127.0.0.1:8001/2",
-  "authorize": "http://127.0.0.1:8001/oauth2/authorize",
-  "token": "http://127.0.0.1:8001/oauth2/token"}}

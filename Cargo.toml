@@ -2,10 +2,10 @@
 name = "cce-vault-web"
 version = "0.1.0"
 edition = "2021"
-description = "The vault in a browser: a cce-ui PWA over an in-memory cce-vault, synced with Dropbox"
+description = "The vault in a browser: a cce-ui PWA over an in-memory cce-vault, synced with cce-sync"
 
 # A cdylib for wasm-bindgen (the page), and an rlib so the portable half
-# (sync engine, Dropbox wire types) is tested natively.
+# (the phone's sync rules, the login) is tested natively.
 [lib]
 name = "cce_vault_web"
 path = "src/lib.rs"
@@ -15,6 +15,8 @@ crate-type = ["cdylib", "rlib"]
 cce-vault = { git = "https://github.com/lsgalante/cce-vault.git", rev = "ee2f46e35206779ad4fd5e4a1bdade01bde61977" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The sync rules and wire types the laptop and the server share; no I/O.
+cce-sync = { git = "https://github.com/lsgalante/cce-sync.git", rev = "e7316042be938b973d0aa76473239005e7a8783d", default-features = false }
 sha2 = "0.10"
 base64 = "0.22"
 log = "0.4"
@@ -23,7 +25,8 @@ chrono = "0.4"
 web-time = "1"
 cce-ui = { git = "https://github.com/lsgalante/cce-ui.git", rev = "160b9e8f3e5cbee583b27d03b380543311fe168c", features = ["markdown", "doc_editor"] }
 
-# The page: wasm-bindgen's glue, IndexedDB, fetch and the login redirect.
+# The page: wasm-bindgen's glue, IndexedDB, fetch, the live socket and the
+# login redirect.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
@@ -52,6 +55,9 @@ web-sys = { version = "0.3", features = [
     "RequestInit",
     "Response",
     "UrlSearchParams",
+    "WebSocket",
+    "MessageEvent",
+    "CloseEvent",
 ] }
 
 [dev-dependencies]

@@ -170,6 +170,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bstr"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bb31b46c14244e20ee9984b11bf5c992b91fb6939fea616e3512c8baecdbe5f"
+dependencies = [
+ "memchr",
+ "serde_core",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -249,6 +259,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cce-sync"
+version = "0.1.0"
+source = "git+https://github.com/lsgalante/cce-sync.git?rev=e7316042be938b973d0aa76473239005e7a8783d#e7316042be938b973d0aa76473239005e7a8783d"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_json",
+ "sha2",
+ "similar",
+]
+
+[[package]]
 name = "cce-ui"
 version = "0.1.0"
 source = "git+https://github.com/lsgalante/cce-ui.git?rev=160b9e8f3e5cbee583b27d03b380543311fe168c#160b9e8f3e5cbee583b27d03b380543311fe168c"
@@ -314,6 +336,7 @@ name = "cce-vault-web"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "cce-sync",
  "cce-ui",
  "cce-vault",
  "chrono",
@@ -1648,6 +1671,15 @@ name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
+
+[[package]]
+name = "similar"
+version = "3.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f66ca1f7aca2474dc10c942eb22feffc897735f54cd1db90138c2fddb490987"
+dependencies = [
+ "bstr",
+]
 
 [[package]]
 name = "simplecss"
