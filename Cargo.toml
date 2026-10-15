@@ -23,7 +23,7 @@ log = "0.4"
 chrono = "0.4"
 # An Instant that works in the browser (std's panics on wasm32).
 web-time = "1"
-cce-ui = { git = "https://github.com/lsgalante/cce-ui.git", rev = "2d55103bdc853341648d295200a2f5fc26bf49c2", features = ["markdown", "doc_editor"] }
+cce-ui = { git = "https://github.com/lsgalante/cce-ui.git", rev = "1d38cc1346f892b862ad452ae525c77b8314eeb3", features = ["markdown", "doc_editor"] }
 
 # The page: wasm-bindgen's glue, IndexedDB, fetch, the live socket and the
 # login redirect.
