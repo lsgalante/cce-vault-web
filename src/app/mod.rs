@@ -126,6 +126,10 @@ pub struct VaultApp {
     read_layout: Option<(String, f32, markdown::Layout)>,
     read_scroll: f32,
     read_motion: ScrollMotion,
+    /// Who the scrolled content (the list, or the note read or edited) is to
+    /// the scroll-gesture rule: it claims the gesture it moves, and stays put
+    /// under one a control took.
+    content_gesture_id: WidgetId,
     read_pending_line: Option<usize>,
     measure: Option<ShapingMeasure>,
     press_at: Option<(f32, f32)>,
@@ -960,6 +964,7 @@ impl Application for VaultApp {
             read_layout: None,
             read_scroll: 0.0,
             read_motion: ScrollMotion::new(),
+            content_gesture_id: cce_ui::widget::Widget::new().id(),
             read_pending_line: None,
             measure: None,
             press_at: None,
@@ -1246,6 +1251,8 @@ impl Application for VaultApp {
     }
 
     fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, pos: LogicalPosition, needs_rebuild: &mut bool) {
+        // The gesture's bookkeeping, before anything asks who owns it.
+        self.ui.note_scroll_event();
         let ev = Event::MouseWheel { delta: *delta, x: pos.x, y: pos.y, local_x: pos.x, local_y: pos.y };
         if self.route(&ev, true) {
             *needs_rebuild = true;
@@ -1253,26 +1260,32 @@ impl Application for VaultApp {
         }
         // A scroll is not a tap.
         self.press_at = None;
-        if self.current_note().is_some() {
+        // The content scrolls in the scroll-gesture rule: under a gesture a
+        // control took it stays put, and one it moves is its own, so the
+        // controls its scroll carries under the pointer decline the rest.
+        let content = self.content_gesture_id;
+        if !self.ui.may_take_wheel(content) {
+            return;
+        }
+        let moved = if self.current_note().is_some() {
             match self.mode {
-                Mode::Edit => {
-                    if self.editor.wheel(delta) {
-                        *needs_rebuild = true;
-                    }
-                }
+                Mode::Edit => self.editor.wheel(delta),
                 Mode::Read => {
                     let max = self.read_max_scroll();
                     self.read_motion.reconcile(0.0, self.read_scroll);
                     let line = BODY_SIZE * 1.5;
-                    if self.read_motion.apply(delta, (line, line * 3.0), Bounds::max(0.0), Bounds::max(max)) {
+                    let moved = self.read_motion.apply(delta, (line, line * 3.0), Bounds::max(0.0), Bounds::max(max));
+                    if moved {
                         self.read_scroll = self.read_motion.y.pos();
-                        *needs_rebuild = true;
                     }
+                    moved
                 }
             }
-            return;
-        }
-        if self.rows.wheel(delta, self.list_rect()) {
+        } else {
+            self.rows.wheel(delta, self.list_rect())
+        };
+        if moved {
+            self.ui.claim_scroll_gesture(content);
             *needs_rebuild = true;
         }
     }
